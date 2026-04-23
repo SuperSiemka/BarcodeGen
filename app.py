@@ -94,35 +94,24 @@ class App(ctk.CTk):
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)  # main content expands
 
         self._build_topbar()
+        self._build_logo_section()
         self._build_main()
         self._build_statusbar()
 
     def _build_topbar(self):
-        bar = ctk.CTkFrame(self, height=56, corner_radius=0)
+        bar = ctk.CTkFrame(self, height=48, corner_radius=0)
         bar.grid(row=0, column=0, sticky="ew")
-        # 3-column layout: left spacer | center logo+title | right buttons
-        bar.grid_columnconfigure(0, weight=1)
-        bar.grid_columnconfigure(2, weight=1)
+        bar.grid_columnconfigure(1, weight=1)  # spacer
 
-        # Center frame — logo + title
-        center = ctk.CTkFrame(bar, fg_color="transparent")
-        center.grid(row=0, column=1, pady=8)
-
-        try:
-            pil_logo = PILImage.open(resource_path("logo.png")).resize((38, 38), PILImage.LANCZOS)
-            ctk_logo = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(38, 38))
-            ctk.CTkLabel(center, image=ctk_logo, text="").pack(side="left", padx=(0, 6))
-        except Exception:
-            pass  # logo file missing — skip silently
-
+        # App name — left side only, no logo here
         ctk.CTkLabel(
-            center,
+            bar,
             text=APP_NAME,
-            font=ctk.CTkFont(size=20, weight="bold"),
-        ).pack(side="left")
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, padx=14, pady=8, sticky="w")
 
         # Right-side buttons
         btn_frame = ctk.CTkFrame(bar, fg_color="transparent")
@@ -139,9 +128,35 @@ class App(ctk.CTk):
             width=100, command=self._open_settings,
         ).pack(side="left")
 
+    def _build_logo_section(self):
+        """Large centered logo banner below the topbar."""
+        section = ctk.CTkFrame(self, corner_radius=0, fg_color=("white", "#1a1a1a"))
+        section.grid(row=1, column=0, sticky="ew")
+        section.grid_columnconfigure(0, weight=1)
+
+        try:
+            pil_logo = PILImage.open(resource_path("logo.png"))
+            # Scale to target height of 90px while preserving aspect ratio
+            target_h = 90
+            ratio = target_h / pil_logo.height
+            target_w = int(pil_logo.width * ratio)
+            pil_logo = pil_logo.resize((target_w, target_h), PILImage.LANCZOS)
+            ctk_logo = ctk.CTkImage(
+                light_image=pil_logo, dark_image=pil_logo,
+                size=(target_w, target_h),
+            )
+            ctk.CTkLabel(section, image=ctk_logo, text="").grid(
+                row=0, column=0, pady=16
+            )
+        except Exception:
+            ctk.CTkLabel(
+                section, text=APP_NAME,
+                font=ctk.CTkFont(size=28, weight="bold"),
+            ).grid(row=0, column=0, pady=16)
+
     def _build_main(self):
         main = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
-        main.grid(row=1, column=0, sticky="nsew", padx=16, pady=(12, 0))
+        main.grid(row=2, column=0, sticky="nsew", padx=16, pady=(12, 0))
         main.grid_columnconfigure(0, weight=1)
         main.grid_rowconfigure(1, weight=1)
 
@@ -234,7 +249,7 @@ class App(ctk.CTk):
 
     def _build_statusbar(self):
         bar = ctk.CTkFrame(self, height=28, corner_radius=0)
-        bar.grid(row=2, column=0, sticky="ew")
+        bar.grid(row=3, column=0, sticky="ew")
         bar.grid_columnconfigure(0, weight=1)
 
         self.status_label = ctk.CTkLabel(
