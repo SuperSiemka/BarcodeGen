@@ -198,34 +198,40 @@ class BarcodeGenerator:
             module_mm = 0.2
             module_px = max(2, round(module_mm * dpi / 25.4))
 
-        # ── Step 2: target data width = exact, no rounding error ──────────
-        n_modules      = _count_data_modules(cls, bar_data, dpi)
-        target_data_w  = module_px * n_modules                  # exact integer
+        # ── Step 2: render bars ───────────────────────────────────────────
+        n_modules     = _count_data_modules(cls, bar_data, dpi)
+        scaled_height = height * (module_px / ref_module_px)
+        bar_img       = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
 
-        # ── Step 3: fit font to target data width ─────────────────────────
-        font_path = _find_font_path()
-        font      = _fit_font_to_width(code, target_data_w, font_path)
+        # ── Step 3: measure actual bar data bounds from pixels ────────────
+        bar_left, bar_right = _scan_bar_bounds(bar_img)
+        actual_data_w = bar_right - bar_left + 1   # pixels of actual bars
+
+        # ── Step 4: font constrained to 3/4 of data width ────────────────
+        # Hard cap at 75% so number is always visually smaller than barcode
+        # and never overflows the canvas regardless of scale.
+        max_text_w = int(actual_data_w * 0.75)
+        font_path  = _find_font_path()
+        font       = _fit_font_to_width(code, max_text_w, font_path)
         text_w, text_h = _measure_text(code, font)
 
-        # ── Step 4: render bars at computed module_mm ─────────────────────
-        # Height must scale with module_px so bar proportions stay correct
-        scaled_height = height * (module_px / ref_module_px)
-        bar_img = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
+        # Safety clamp — text must never exceed canvas width
+        canvas_w = bar_img.width
+        if text_w > canvas_w - 4:
+            font   = _fit_font_to_width(code, canvas_w - 4, font_path)
+            text_w, text_h = _measure_text(code, font)
 
-        # ── Step 5: measure actual bar bounds from pixels ─────────────────
-        bar_left, bar_right = _scan_bar_bounds(bar_img)
-        actual_data_w = bar_right - bar_left + 1
-
-        # ── Step 6: compose — text centred over actual data area ──────────
-        gap_px    = max(2, int(0.5 * dpi / 25.4))   # ~0.5 mm
-        pad_px    = max(2, int(1.0 * dpi / 25.4))   # ~1 mm bottom
-        canvas_h  = bar_img.height + gap_px + text_h + pad_px
-        canvas_w  = bar_img.width
-        final     = Image.new("RGB", (canvas_w, canvas_h), "white")
+        # ── Step 5: compose ───────────────────────────────────────────────
+        gap_px   = max(2, int(0.4 * dpi / 25.4))   # ~0.4 mm — tight gap
+        pad_px   = max(2, int(0.8 * dpi / 25.4))   # ~0.8 mm bottom
+        canvas_h = bar_img.height + gap_px + text_h + pad_px
+        final    = Image.new("RGB", (canvas_w, canvas_h), "white")
         final.paste(bar_img, (0, 0))
 
         draw   = ImageDraw.Draw(final)
         text_x = bar_left + (actual_data_w - text_w) // 2
+        # Clamp text_x so text never goes outside canvas
+        text_x = max(0, min(text_x, canvas_w - text_w))
         draw.text((text_x, bar_img.height + gap_px), code, fill="black", font=font)
 
         out_path = out_dir / f"{code}.png"
