@@ -95,6 +95,10 @@ class App(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.title(f"{APP_NAME} v{VERSION}")
+        try:
+            self.iconbitmap(str(resource_path("icon.ico")))
+        except Exception:
+            pass
         self.geometry("860x700")
         self.minsize(800, 620)
         self.resizable(True, True)
