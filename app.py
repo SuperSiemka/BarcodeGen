@@ -103,33 +103,30 @@ class App(ctk.CTk):
     def _build_topbar(self):
         bar = ctk.CTkFrame(self, height=56, corner_radius=0)
         bar.grid(row=0, column=0, sticky="ew")
-        bar.grid_columnconfigure(2, weight=1)  # spacer column expands
+        # 3-column layout: left spacer | center logo+title | right buttons
+        bar.grid_columnconfigure(0, weight=1)
+        bar.grid_columnconfigure(2, weight=1)
 
-        col = 0
+        # Center frame — logo + title
+        center = ctk.CTkFrame(bar, fg_color="transparent")
+        center.grid(row=0, column=1, pady=8)
 
-        # Logo image
         try:
             pil_logo = PILImage.open(resource_path("logo.png")).resize((38, 38), PILImage.LANCZOS)
             ctk_logo = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(38, 38))
-            ctk.CTkLabel(bar, image=ctk_logo, text="").grid(
-                row=0, column=col, padx=(10, 2), pady=8
-            )
-            col += 1
+            ctk.CTkLabel(center, image=ctk_logo, text="").pack(side="left", padx=(0, 6))
         except Exception:
             pass  # logo file missing — skip silently
 
-        # App title
         ctk.CTkLabel(
-            bar,
+            center,
             text=APP_NAME,
             font=ctk.CTkFont(size=20, weight="bold"),
-        ).grid(row=0, column=col, padx=(4, 12), pady=8, sticky="w")
-
-        # Spacer (column 2 is weight=1)
+        ).pack(side="left")
 
         # Right-side buttons
         btn_frame = ctk.CTkFrame(bar, fg_color="transparent")
-        btn_frame.grid(row=0, column=3, padx=12, pady=8, sticky="e")
+        btn_frame.grid(row=0, column=2, padx=12, pady=8, sticky="e")
 
         self.lang_btn = ctk.CTkButton(
             btn_frame, text=self._other_lang(),
