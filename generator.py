@@ -208,7 +208,9 @@ class BarcodeGenerator:
         text_w, text_h = _measure_text(code, font)
 
         # ── Step 4: render bars at computed module_mm ─────────────────────
-        bar_img = _render_bars(cls, bar_data, height, module_mm, dpi)
+        # Height must scale with module_px so bar proportions stay correct
+        scaled_height = height * (module_px / ref_module_px)
+        bar_img = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
 
         # ── Step 5: measure actual bar bounds from pixels ─────────────────
         bar_left, bar_right = _scan_bar_bounds(bar_img)
