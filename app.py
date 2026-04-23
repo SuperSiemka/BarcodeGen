@@ -3,15 +3,16 @@ BarcodeGen — Desktop barcode generator (EAN-13 / Code128)
 """
 
 import os
+import sys
 import json
 import threading
 import datetime
 from pathlib import Path
-from typing import Optional
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import tkinter as tk
+from PIL import Image as PILImage
 
 from generator import BarcodeGenerator, BarcodeError
 from lang import LANG
@@ -20,15 +21,35 @@ from lang import LANG
 
 APP_NAME = "BarcodeGen"
 VERSION = "1.0.0"
-SETTINGS_FILE = Path(__file__).parent / "settings.json"
 DEFAULT_SETTINGS = {
-    "output_dir": "",          # empty = app subdir
+    "output_dir": "",
     "height": 9.0,
     "distance": 0.15,
     "font_size": 1.3,
     "dpi": 300,
     "language": "PL",
 }
+
+# ─── Path helpers (PyInstaller-safe) ─────────────────────────────────────────
+
+def resource_path(name: str) -> Path:
+    """Path to a bundled asset — works both in dev and frozen .exe."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS) / name
+    return Path(__file__).parent / name
+
+
+def app_dir() -> Path:
+    """Directory of the running .exe (or script during development).
+    Used for settings.json and default output folder so they survive
+    PyInstaller's temp-dir unpacking.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+SETTINGS_FILE = app_dir() / "settings.json"
 
 # ─── Settings ────────────────────────────────────────────────────────────────
 
@@ -37,7 +58,6 @@ def load_settings() -> dict:
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # merge with defaults so new keys always exist
                 return {**DEFAULT_SETTINGS, **data}
         except Exception:
             pass
@@ -81,20 +101,35 @@ class App(ctk.CTk):
         self._build_statusbar()
 
     def _build_topbar(self):
-        bar = ctk.CTkFrame(self, height=52, corner_radius=0)
+        bar = ctk.CTkFrame(self, height=56, corner_radius=0)
         bar.grid(row=0, column=0, sticky="ew")
-        bar.grid_columnconfigure(1, weight=1)
+        bar.grid_columnconfigure(2, weight=1)  # spacer column expands
 
-        # Logo / title
-        title = ctk.CTkLabel(
-            bar, text=f"  {APP_NAME}",
+        col = 0
+
+        # Logo image
+        try:
+            pil_logo = PILImage.open(resource_path("logo.png")).resize((38, 38), PILImage.LANCZOS)
+            ctk_logo = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(38, 38))
+            ctk.CTkLabel(bar, image=ctk_logo, text="").grid(
+                row=0, column=col, padx=(10, 2), pady=8
+            )
+            col += 1
+        except Exception:
+            pass  # logo file missing — skip silently
+
+        # App title
+        ctk.CTkLabel(
+            bar,
+            text=APP_NAME,
             font=ctk.CTkFont(size=20, weight="bold"),
-        )
-        title.grid(row=0, column=0, padx=12, pady=8, sticky="w")
+        ).grid(row=0, column=col, padx=(4, 12), pady=8, sticky="w")
+
+        # Spacer (column 2 is weight=1)
 
         # Right-side buttons
         btn_frame = ctk.CTkFrame(bar, fg_color="transparent")
-        btn_frame.grid(row=0, column=2, padx=12, pady=6, sticky="e")
+        btn_frame.grid(row=0, column=3, padx=12, pady=8, sticky="e")
 
         self.lang_btn = ctk.CTkButton(
             btn_frame, text=self._other_lang(),
@@ -118,23 +153,22 @@ class App(ctk.CTk):
         input_card.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         input_card.grid_columnconfigure(0, weight=1)
 
-        lbl = ctk.CTkLabel(
+        ctk.CTkLabel(
             input_card,
             text=self.t["input_label"],
             font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
-        )
-        lbl.grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
 
         self.code_input = ctk.CTkTextbox(input_card, height=140, font=ctk.CTkFont(size=13))
-        self.code_input.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 10), sticky="ew")
+        self.code_input.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="ew")
 
         btn_row = ctk.CTkFrame(input_card, fg_color="transparent")
-        btn_row.grid(row=2, column=0, columnspan=2, padx=14, pady=(0, 10), sticky="w")
+        btn_row.grid(row=2, column=0, padx=14, pady=(0, 6), sticky="w")
 
         ctk.CTkButton(
             btn_row, text=self.t["import_excel"],
-            width=160, command=self._import_excel,
+            width=180, command=self._import_excel,
         ).pack(side="left", padx=(0, 10))
 
         ctk.CTkButton(
@@ -143,23 +177,16 @@ class App(ctk.CTk):
             command=self._clear_input,
         ).pack(side="left")
 
-        # ── Progress + generate ──
-        action_row = ctk.CTkFrame(main, fg_color="transparent")
-        action_row.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        action_row.grid_columnconfigure(0, weight=1)
-
-        self.progress_bar = ctk.CTkProgressBar(action_row)
-        self.progress_bar.set(0)
-        self.progress_bar.grid(row=0, column=0, sticky="ew", padx=(0, 12))
-
-        self.generate_btn = ctk.CTkButton(
-            action_row,
-            text=self.t["generate"],
-            width=160,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=self._on_generate,
-        )
-        self.generate_btn.grid(row=0, column=1)
+        # Excel hint label
+        ctk.CTkLabel(
+            input_card,
+            text=self.t["excel_hint"],
+            font=ctk.CTkFont(size=11),
+            text_color=("gray50", "gray60"),
+            anchor="w",
+            wraplength=780,
+            justify="left",
+        ).grid(row=3, column=0, padx=14, pady=(0, 10), sticky="w")
 
         # ── Log / results ──
         log_card = ctk.CTkFrame(main)
@@ -181,7 +208,7 @@ class App(ctk.CTk):
         self.open_folder_btn = ctk.CTkButton(
             log_hdr,
             text=self.t["open_folder"],
-            width=160,
+            width=180,
             command=self._open_output_folder,
             state="disabled",
         )
@@ -189,6 +216,24 @@ class App(ctk.CTk):
 
         self.log_box = ctk.CTkTextbox(log_card, font=ctk.CTkFont(size=12), state="disabled")
         self.log_box.grid(row=1, column=0, padx=14, pady=(0, 12), sticky="nsew")
+
+        # ── Progress + generate ──
+        action_row = ctk.CTkFrame(main, fg_color="transparent")
+        action_row.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        action_row.grid_columnconfigure(0, weight=1)
+
+        self.progress_bar = ctk.CTkProgressBar(action_row)
+        self.progress_bar.set(0)
+        self.progress_bar.grid(row=0, column=0, sticky="ew", padx=(0, 12))
+
+        self.generate_btn = ctk.CTkButton(
+            action_row,
+            text=self.t["generate"],
+            width=180,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._on_generate,
+        )
+        self.generate_btn.grid(row=0, column=1)
 
     def _build_statusbar(self):
         bar = ctk.CTkFrame(self, height=28, corner_radius=0)
@@ -223,15 +268,16 @@ class App(ctk.CTk):
             for row in ws.iter_rows(min_row=1, values_only=True):
                 val = row[0] if row else None
                 if val is not None:
-                    codes.append(str(val).strip())
+                    stripped = str(val).strip()
+                    if stripped:
+                        codes.append(stripped)
             wb.close()
 
             existing = self.code_input.get("1.0", "end").strip()
             existing_codes = [c for c in existing.splitlines() if c.strip()]
-
-            new_text = "\n".join(existing_codes + codes) if existing_codes else "\n".join(codes)
+            merged = existing_codes + codes
             self.code_input.delete("1.0", "end")
-            self.code_input.insert("1.0", new_text)
+            self.code_input.insert("1.0", "\n".join(merged))
 
             self._set_status(self.t["excel_loaded"].format(n=len(codes), file=Path(path).name))
         except Exception as e:
@@ -257,10 +303,10 @@ class App(ctk.CTk):
             messagebox.showwarning(APP_NAME, self.t["too_many"].format(n=len(codes)))
             return
 
-        # Check duplicates
-        seen = set()
-        dupes = []
-        unique_codes = []
+        # Detect duplicates
+        seen: set = set()
+        dupes: list = []
+        unique_codes: list = []
         for c in codes:
             if c in seen:
                 if c not in dupes:
@@ -280,10 +326,8 @@ class App(ctk.CTk):
         # Check for existing files
         existing_files = [c for c in codes if (out_dir / f"{c}.png").exists()]
         if existing_files:
-            msg = self.t["files_exist"].format(
-                n=len(existing_files),
-                examples=", ".join(existing_files[:3]) + ("..." if len(existing_files) > 3 else ""),
-            )
+            examples = ", ".join(existing_files[:3]) + ("..." if len(existing_files) > 3 else "")
+            msg = self.t["files_exist"].format(n=len(existing_files), examples=examples)
             if not messagebox.askyesno(APP_NAME, msg):
                 return
 
@@ -328,9 +372,7 @@ class App(ctk.CTk):
         ok = total - len(errors)
         self.generate_btn.configure(state="normal")
         self.open_folder_btn.configure(state="normal")
-        self.count_label.configure(
-            text=self.t["result_count"].format(ok=ok, total=total)
-        )
+        self.count_label.configure(text=self.t["result_count"].format(ok=ok, total=total))
         self._set_status(self.t["done"])
 
         if errors:
@@ -348,28 +390,29 @@ class App(ctk.CTk):
     def _open_settings(self):
         win = ctk.CTkToplevel(self)
         win.title(self.t["settings"])
-        win.geometry("460x400")
+        win.geometry("480x380")
         win.resizable(False, False)
         win.grab_set()
 
-        pad = {"padx": 20, "pady": 6}
+        win.grid_columnconfigure(1, weight=1)  # entry column expands
 
-        def row(label_text, row_i):
-            ctk.CTkLabel(win, text=label_text, anchor="w", width=160).grid(
+        pad = {"padx": 20, "pady": 7}
+
+        def label(text, row_i):
+            ctk.CTkLabel(win, text=text, anchor="w", width=160).grid(
                 row=row_i, column=0, sticky="w", **pad
             )
 
         # Output dir
-        row(self.t["output_dir"], 0)
+        label(self.t["output_dir"], 0)
         dir_var = tk.StringVar(value=self.settings["output_dir"])
-        dir_entry = ctk.CTkEntry(win, textvariable=dir_var, width=220)
-        dir_entry.grid(row=0, column=1, **pad, sticky="ew")
+        ctk.CTkEntry(win, textvariable=dir_var).grid(
+            row=0, column=1, sticky="ew", **pad
+        )
         ctk.CTkButton(
             win, text="...", width=36,
-            command=lambda: dir_var.set(
-                filedialog.askdirectory() or dir_var.get()
-            ),
-        ).grid(row=0, column=2, padx=(0, 20), pady=6)
+            command=lambda: dir_var.set(filedialog.askdirectory() or dir_var.get()),
+        ).grid(row=0, column=2, padx=(0, 20), pady=7)
 
         # Numeric params
         fields = [
@@ -378,12 +421,12 @@ class App(ctk.CTk):
             ("font_size", self.t["param_font_size"], 3),
             ("dpi",       self.t["param_dpi"],       4),
         ]
-        vars_ = {}
-        for key, label, r in fields:
-            row(label, r)
+        vars_: dict = {}
+        for key, lbl, r in fields:
+            label(lbl, r)
             v = tk.StringVar(value=str(self.settings[key]))
             vars_[key] = v
-            ctk.CTkEntry(win, textvariable=v, width=100).grid(
+            ctk.CTkEntry(win, textvariable=v, width=120).grid(
                 row=r, column=1, sticky="w", **pad
             )
 
@@ -410,7 +453,6 @@ class App(ctk.CTk):
         self.settings["language"] = self.lang
         save_settings(self.settings)
         self.t = LANG[self.lang]
-        # Restart UI to apply language
         for widget in self.winfo_children():
             widget.destroy()
         self._build_ui()
@@ -422,10 +464,7 @@ class App(ctk.CTk):
 
     def _resolve_output_dir(self) -> Path:
         base = self.settings.get("output_dir", "").strip()
-        if not base:
-            base = Path(__file__).parent / "output"
-        else:
-            base = Path(base)
+        base = Path(base) if base else app_dir() / "output"
         dated = base / datetime.date.today().isoformat()
         dated.mkdir(parents=True, exist_ok=True)
         return dated

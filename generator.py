@@ -56,6 +56,12 @@ class BarcodeGenerator:
         Generate a barcode PNG for *code* and save it to out_dir/<code>.png.
         Returns the path of the created file.
         Raises BarcodeError on invalid input.
+
+        Parameters:
+            height    — bar height in mm
+            distance  — module (bar) width in mm
+            font_size — font size scale factor (1.0 = 10pt)
+            dpi       — output resolution
         """
         code = code.strip()
         if not code:
@@ -66,8 +72,8 @@ class BarcodeGenerator:
         if barcode_type == "ean13":
             _validate_ean13(code)
             cls = barcode.get_barcode_class("ean13")
-            # python-barcode expects 12 digits for EAN-13 (adds check digit internally)
-            # but since we already validated the full 13-digit code, strip last digit
+            # python-barcode EAN13 class takes 12 digits and appends the check digit itself.
+            # We already validated the full 13-digit code so the check digit matches.
             barcode_data = code[:12]
         else:
             cls = barcode.get_barcode_class("code128")
@@ -76,12 +82,15 @@ class BarcodeGenerator:
         writer = ImageWriter()
 
         writer_options = {
-            "module_height": height,
-            "quiet_zone": distance * 10,   # python-barcode uses mm, quiet_zone is in mm
-            "font_size": int(font_size * 10),
-            "text_distance": distance * 10,
+            "module_height": height,            # bar height in mm
+            "module_width": distance,           # single bar width in mm
+            "quiet_zone": 6.5,                 # standard left/right margin in mm (was wrongly distance*10)
+            "font_size": int(font_size * 10),  # font in points (13pt for scale 1.3)
+            "text_distance": 5.0,              # gap between bars and text in mm (was wrongly distance*10 = 1.5mm)
             "dpi": dpi,
             "write_text": True,
+            "background": "white",
+            "foreground": "black",
         }
 
         bc = cls(barcode_data, writer=writer)
@@ -91,7 +100,6 @@ class BarcodeGenerator:
         buf.seek(0)
 
         img = Image.open(buf)
-
         out_path = out_dir / f"{code}.png"
         img.save(str(out_path), format="PNG", dpi=(dpi, dpi))
 
