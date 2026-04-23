@@ -1,11 +1,13 @@
 """
 Barcode generation logic — EAN-13 and Code128.
 
-Quality approach:
-  1. Count barcode modules by generating a 1-px-per-module probe image.
-  2. Compute module_width so each module is exactly N whole pixels wide.
-  3. Generate the real barcode at that size — no post-generation scaling,
-     no anti-aliased bar edges, crisp output for print.
+Correct scaling strategy:
+  1. scale controls module_px (integer pixels per bar module).
+  2. target data width = module_px * n_modules  (exact, no rounding error).
+  3. Font is fitted to match target data width exactly.
+  4. Actual quiet-zone boundaries are measured from the rendered image
+     (pixel scan) so centering is always correct regardless of DPI/library.
+  5. No post-generation scaling → zero blur, crisp bar edges at any size.
 """
 
 import io
@@ -60,10 +62,10 @@ def _find_font_path() -> str | None:
     return None
 
 
-def _make_font(font_path: str | None, size_px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    if font_path:
+def _make_font(path: str | None, size_px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    if path:
         try:
-            return ImageFont.truetype(font_path, size_px)
+            return ImageFont.truetype(path, size_px)
         except Exception:
             pass
     try:
@@ -73,26 +75,36 @@ def _make_font(font_path: str | None, size_px: int) -> ImageFont.FreeTypeFont | 
 
 
 def _measure_text(text: str, font) -> tuple[int, int]:
-    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    bb    = probe.textbbox((0, 0), text, font=font)
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    bb   = draw.textbbox((0, 0), text, font=font)
     return bb[2] - bb[0], bb[3] - bb[1]
+
+
+def _fit_font_to_width(text: str, target_w: int, font_path: str | None) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Binary-search for largest font where text_width <= target_w."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    if font_path is None:
+        return _make_font(None, 12)
+    lo, hi, best = 4, 800, _make_font(font_path, 4)
+    while lo <= hi:
+        mid  = (lo + hi) // 2
+        font = ImageFont.truetype(font_path, mid)
+        bb   = draw.textbbox((0, 0), text, font=font)
+        if bb[2] - bb[0] <= target_w:
+            best = font
+            lo   = mid + 1
+        else:
+            hi   = mid - 1
+    return best
 
 
 # ── Module counting ────────────────────────────────────────────────────────────
 
-_QUIET_ZONE_MM = 6.5         # real quiet zone used in final image
-
-# Probe module width: large enough to avoid library crashes (≥ 0.2mm),
-# gives ~3-6px/module at common DPIs → safe integer arithmetic.
-_PROBE_MW_MM   = 0.5
-_PROBE_QZ_MM   = _PROBE_MW_MM * 10   # 5.0 mm
-
+_PROBE_MW_MM = 0.5          # safe probe module width (≥ 0.2 mm required)
+_PROBE_QZ_MM = 5.0          # known probe quiet zone
 
 def _count_data_modules(barcode_cls, data: str, dpi: int) -> int:
-    """
-    Render a throwaway image with _PROBE_MW_MM width and _PROBE_QZ_MM quiet
-    zone, then compute how many data modules fit in the data area.
-    """
+    """Count barcode data modules using a probe render at known module width."""
     bc  = barcode_cls(data, writer=ImageWriter())
     buf = io.BytesIO()
     bc.write(buf, options={
@@ -105,22 +117,24 @@ def _count_data_modules(barcode_cls, data: str, dpi: int) -> int:
         "foreground":    "black",
     })
     buf.seek(0)
-    img      = Image.open(buf)
-    qz_px    = int(_PROBE_QZ_MM * dpi / 25.4)
-    data_px  = img.width - 2 * qz_px
-    mw_px    = _PROBE_MW_MM * dpi / 25.4     # pixels per module in probe image
+    img     = Image.open(buf)
+    qz_px   = int(_PROBE_QZ_MM * dpi / 25.4)
+    data_px = img.width - 2 * qz_px
+    mw_px   = _PROBE_MW_MM * dpi / 25.4
     return max(1, round(data_px / mw_px))
 
 
-# ── Rendering ─────────────────────────────────────────────────────────────────
+# ── Bar image rendering ────────────────────────────────────────────────────────
 
-def _render_bars(barcode_cls, data: str, height: float, module_mm: float, dpi: int) -> Image.Image:
-    """Generate bar-only image at the given module_width (no text)."""
+_QUIET_ZONE_MM = 6.5
+
+def _render_bars(barcode_cls, data: str, height_mm: float,
+                 module_mm: float, dpi: int) -> Image.Image:
     bc  = barcode_cls(data, writer=ImageWriter())
     buf = io.BytesIO()
     bc.write(buf, options={
         "module_width":  module_mm,
-        "module_height": height,
+        "module_height": height_mm,
         "quiet_zone":    _QUIET_ZONE_MM,
         "dpi":           dpi,
         "write_text":    False,
@@ -131,32 +145,19 @@ def _render_bars(barcode_cls, data: str, height: float, module_mm: float, dpi: i
     return Image.open(buf).convert("RGB")
 
 
-def _compose(
-    bar_img:   Image.Image,
-    text:      str,
-    dpi:       int,
-    font_size: float,
-    text_w:    int,
-    text_h:    int,
-    font,
-) -> Image.Image:
-    """Compose final image: bars + text centred over the data (bar) area."""
-    quiet_px = int(_QUIET_ZONE_MM * dpi / 25.4)
-    bar_area = max(1, bar_img.width - 2 * quiet_px)
-
-    gap_px = max(2, int(0.5 * dpi / 25.4))     # ~0.5 mm — close but no overlap
-    pad_px = max(2, int(1.0 * dpi / 25.4))     # ~1 mm bottom padding
-
-    canvas_w = bar_img.width
-    canvas_h = bar_img.height + gap_px + text_h + pad_px
-    final    = Image.new("RGB", (canvas_w, canvas_h), "white")
-    final.paste(bar_img, (0, 0))
-
-    draw   = ImageDraw.Draw(final)
-    # Centre text over bar data area (between the quiet zones)
-    text_x = quiet_px + (bar_area - text_w) // 2
-    draw.text((text_x, bar_img.height + gap_px), text, fill="black", font=font)
-    return final
+def _scan_bar_bounds(img: Image.Image) -> tuple[int, int]:
+    """
+    Scan the middle row of the bar image to find the x-coordinates of the
+    first and last black pixel.  Returns (left_x, right_x).
+    This gives the actual data area regardless of quiet zone size.
+    """
+    mid_y  = img.height // 3
+    pixels = img.crop((0, mid_y, img.width, mid_y + 1)).convert("L").getdata()
+    px     = list(pixels)
+    left   = next((i for i, v in enumerate(px)         if v < 128), 0)
+    right  = next((i for i, v in enumerate(reversed(px)) if v < 128), img.width - 1)
+    right  = img.width - 1 - right
+    return left, right
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -168,7 +169,7 @@ class BarcodeGenerator:
         out_dir:   Path,
         height:    float = 9.0,
         distance:  float = 0.15,
-        font_size: float = 1.3,
+        font_size: float = 1.3,   # not used for sizing — kept for API compat
         dpi:       int   = 300,
         scale:     float = 1.0,
     ) -> Path:
@@ -185,26 +186,49 @@ class BarcodeGenerator:
             cls      = barcode.get_barcode_class("code128")
             bar_data = code
 
-        # ── Step 1: compute text dimensions ──────────────────────────────────
-        effective_font_size = max(0.1, font_size * scale)
-        font_pt  = max(6.0, effective_font_size * 10)        # e.g. 1.3 * 10 = 13 pt
-        font_px  = max(8, int(font_pt * dpi / 72))
+        # ── Step 1: integer module_px driven by scale ─────────────────────
+        # base_module_px = pixels per module at scale=1, distance setting
+        base_module_px = max(1, round(distance * dpi / 25.4))   # e.g. 0.15mm@300dpi→2px
+        module_px      = max(1, round(base_module_px * scale))  # scale multiplies it
+        module_mm      = module_px * 25.4 / dpi                 # exact mm for renderer
+        # python-barcode requires module_width >= ~0.2mm; enforce minimum
+        MIN_MODULE_MM  = 0.2
+        if module_mm < MIN_MODULE_MM:
+            module_mm  = MIN_MODULE_MM
+            module_px  = max(1, round(module_mm * dpi / 25.4))
+
+        # ── Step 2: target data width = exact, no rounding error ──────────
+        n_modules      = _count_data_modules(cls, bar_data, dpi)
+        target_data_w  = module_px * n_modules                  # exact integer
+
+        # ── Step 3: fit font to target data width ─────────────────────────
         font_path = _find_font_path()
-        font     = _make_font(font_path, font_px)
+        font      = _fit_font_to_width(code, target_data_w, font_path)
         text_w, text_h = _measure_text(code, font)
 
-        # ── Step 2: count modules, compute integer module_width ───────────────
-        n_modules = _count_data_modules(cls, bar_data, dpi)
-
-        # Whole pixels per module → crisp edges, no anti-aliasing on bars
-        module_px  = max(1, round(text_w / n_modules))
-        module_mm  = module_px * 25.4 / dpi           # back to mm for the writer
-
-        # ── Step 3: render bars at exact size (no scaling) ───────────────────
+        # ── Step 4: render bars at computed module_mm ─────────────────────
         bar_img = _render_bars(cls, bar_data, height, module_mm, dpi)
 
-        # ── Step 4: compose ───────────────────────────────────────────────────
-        final    = _compose(bar_img, code, dpi, effective_font_size, text_w, text_h, font)
+        # ── Step 5: measure actual bar bounds from pixels ─────────────────
+        bar_left, bar_right = _scan_bar_bounds(bar_img)
+        actual_data_w = bar_right - bar_left + 1
+
+        # ── Step 6: compose — text centred over actual data area ──────────
+        gap_px    = max(2, int(0.5 * dpi / 25.4))   # ~0.5 mm
+        pad_px    = max(2, int(1.0 * dpi / 25.4))   # ~1 mm bottom
+        canvas_h  = bar_img.height + gap_px + text_h + pad_px
+        canvas_w  = bar_img.width
+        final     = Image.new("RGB", (canvas_w, canvas_h), "white")
+        final.paste(bar_img, (0, 0))
+
+        draw   = ImageDraw.Draw(final)
+        text_x = bar_left + (actual_data_w - text_w) // 2
+        draw.text((text_x, bar_img.height + gap_px), code, fill="black", font=font)
+
         out_path = out_dir / f"{code}.png"
         final.save(str(out_path), format="PNG", dpi=(dpi, dpi))
+        # Touch mtime explicitly so file manager always shows updated time
+        import time
+        t = time.time()
+        os.utime(str(out_path), (t, t))
         return out_path
