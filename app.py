@@ -70,6 +70,8 @@ def load_settings() -> dict:
         winreg.CloseKey(key)
     except FileNotFoundError:
         pass
+    # Clamp scale to valid range — guards against stale registry values
+    settings["scale"] = max(0.5, min(3.0, settings["scale"]))
     return settings
 
 
