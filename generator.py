@@ -186,16 +186,21 @@ class BarcodeGenerator:
         bar_img       = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
         canvas_w      = bar_img.width
 
-        # ── 3. Choose font: max 70% of canvas width ───────────────────────
+        # ── 3. Choose font ────────────────────────────────────────────────
+        # Constraint 1: max 70% of canvas width (horizontal)
+        # Constraint 2: max 40% of bar height in pixels (vertical proportionality)
+        #   — prevents font being oversized relative to short bars at low scale
         max_text_w = int(canvas_w * 0.70)
+        max_text_h = max(8, int(bar_img.height * 0.40))
         font_path  = _find_font_path()
         font       = _fit_font_to_width(code, max_text_w, font_path)
 
-        # Extra safety loop — guarantees text_pixel_width <= canvas_w - 8
+        # Shrink to satisfy both constraints
         while True:
-            bb = _textbbox_full(code, font)
+            bb      = _textbbox_full(code, font)
             pixel_w = bb[2] - bb[0]
-            if pixel_w <= canvas_w - 8:
+            pixel_h = bb[3]          # bb[3] = y2 = actual bottom pixel
+            if pixel_w <= canvas_w - 8 and pixel_h <= max_text_h:
                 break
             max_text_w -= 10
             if max_text_w < 10:
@@ -229,6 +234,7 @@ class BarcodeGenerator:
         # ── 5. Save — always update mtime even on overwrite ───────────────
         out_path = out_dir / f"{code}.png"
         final.save(str(out_path), format="PNG", dpi=(dpi, dpi))
-        ts = time.time()
-        os.utime(str(out_path), (ts, ts))
+        # os.utime(path, None) sets atime+mtime to NOW — forces Windows
+        # Explorer to show the updated modification timestamp on overwrite
+        os.utime(str(out_path), None)
         return out_path
