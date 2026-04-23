@@ -299,10 +299,6 @@ class App(ctk.CTk):
         _link("dCoded", "https://www.dcoded.pl").pack(side="left")
         _lbl(" & ").pack(side="left")
         _link("id3ntity", "https://www.id3ntity.pl").pack(side="left")
-        _lbl("  |  ").pack(side="left")
-        _link("www.dcoded.pl", "https://www.dcoded.pl").pack(side="left")
-        _lbl("   ").pack(side="left")
-        _link("www.id3ntity.pl", "https://www.id3ntity.pl").pack(side="left")
 
     # ── Scale slider handlers ─────────────────────────────────────────────────
 
