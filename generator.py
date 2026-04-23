@@ -1,17 +1,18 @@
 """
 Barcode generation logic — EAN-13 and Code128.
 
-Correct scaling strategy:
-  1. scale controls module_px (integer pixels per bar module).
-  2. target data width = module_px * n_modules  (exact, no rounding error).
-  3. Font is fitted to match target data width exactly.
-  4. Actual quiet-zone boundaries are measured from the rendered image
-     (pixel scan) so centering is always correct regardless of DPI/library.
-  5. No post-generation scaling → zero blur, crisp bar edges at any size.
+Scaling strategy:
+  1. scale controls module_px (integer px per bar module, no fractions).
+  2. Bar height scales proportionally with module_px.
+  3. Font fitted to 70% of canvas width — never overflows horizontally.
+  4. Canvas height computed from textbbox y2 (not y2-y0) so vertical
+     clipping is impossible regardless of scale or font metrics.
+  5. No post-generation PIL scaling → zero blur, crisp bar edges.
 """
 
 import io
 import os
+import time
 import platform
 from pathlib import Path
 
@@ -74,14 +75,14 @@ def _make_font(path: str | None, size_px: int) -> ImageFont.FreeTypeFont | Image
         return ImageFont.load_default()
 
 
-def _measure_text(text: str, font) -> tuple[int, int]:
+def _textbbox_full(text: str, font) -> tuple[int, int, int, int]:
+    """Return (x0, y0, x2, y2) bounding box of rendered text pixels."""
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    bb   = draw.textbbox((0, 0), text, font=font)
-    return bb[2] - bb[0], bb[3] - bb[1]
+    return draw.textbbox((0, 0), text, font=font)
 
 
 def _fit_font_to_width(text: str, target_w: int, font_path: str | None) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Binary-search for largest font where text_width <= target_w."""
+    """Binary-search for largest font size where pixel width <= target_w."""
     draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     if font_path is None:
         return _make_font(None, 12)
@@ -100,11 +101,11 @@ def _fit_font_to_width(text: str, target_w: int, font_path: str | None) -> Image
 
 # ── Module counting ────────────────────────────────────────────────────────────
 
-_PROBE_MW_MM = 0.5          # safe probe module width (≥ 0.2 mm required)
-_PROBE_QZ_MM = 5.0          # known probe quiet zone
+_PROBE_MW_MM = 0.5
+_PROBE_QZ_MM = 5.0
+
 
 def _count_data_modules(barcode_cls, data: str, dpi: int) -> int:
-    """Count barcode data modules using a probe render at known module width."""
     bc  = barcode_cls(data, writer=ImageWriter())
     buf = io.BytesIO()
     bc.write(buf, options={
@@ -124,9 +125,10 @@ def _count_data_modules(barcode_cls, data: str, dpi: int) -> int:
     return max(1, round(data_px / mw_px))
 
 
-# ── Bar image rendering ────────────────────────────────────────────────────────
+# ── Bar rendering ─────────────────────────────────────────────────────────────
 
 _QUIET_ZONE_MM = 6.5
+
 
 def _render_bars(barcode_cls, data: str, height_mm: float,
                  module_mm: float, dpi: int) -> Image.Image:
@@ -145,21 +147,6 @@ def _render_bars(barcode_cls, data: str, height_mm: float,
     return Image.open(buf).convert("RGB")
 
 
-def _scan_bar_bounds(img: Image.Image) -> tuple[int, int]:
-    """
-    Scan the middle row of the bar image to find the x-coordinates of the
-    first and last black pixel.  Returns (left_x, right_x).
-    This gives the actual data area regardless of quiet zone size.
-    """
-    mid_y  = img.height // 3
-    pixels = img.crop((0, mid_y, img.width, mid_y + 1)).convert("L").getdata()
-    px     = list(pixels)
-    left   = next((i for i, v in enumerate(px)         if v < 128), 0)
-    right  = next((i for i, v in enumerate(reversed(px)) if v < 128), img.width - 1)
-    right  = img.width - 1 - right
-    return left, right
-
-
 # ── Public API ────────────────────────────────────────────────────────────────
 
 class BarcodeGenerator:
@@ -169,7 +156,7 @@ class BarcodeGenerator:
         out_dir:   Path,
         height:    float = 9.0,
         distance:  float = 0.15,
-        font_size: float = 1.3,   # not used for sizing — kept for API compat
+        font_size: float = 1.3,
         dpi:       int   = 300,
         scale:     float = 1.0,
     ) -> Path:
@@ -186,55 +173,62 @@ class BarcodeGenerator:
             cls      = barcode.get_barcode_class("code128")
             bar_data = code
 
-        # ── Step 1: integer module_px driven by scale ─────────────────────
-        # Reference: 4px/module at 300 DPI = 0.339mm ≈ ISO EAN-13 standard (0.33mm).
-        # Scale multiplies this reference.  DPI scales proportionally so physical
-        # size stays constant regardless of chosen DPI.
-        ref_module_px = max(2, round(4 * dpi / 300))   # 4px@300, 8px@600, etc.
+        # ── 1. Module size (integer px → no rounding cascade) ────────────
+        ref_module_px = max(2, round(4 * dpi / 300))        # 4px @ 300 DPI
         module_px     = max(2, round(ref_module_px * scale))
-        module_mm     = module_px * 25.4 / dpi          # back to mm for renderer
-        # python-barcode minimum: ~0.2mm
-        if module_mm < 0.2:
-            module_mm = 0.2
-            module_px = max(2, round(module_mm * dpi / 25.4))
+        module_mm     = module_px * 25.4 / dpi
+        if module_mm < 0.2:                                  # library minimum
+            module_mm  = 0.2
+            module_px  = max(2, round(module_mm * dpi / 25.4))
 
-        # ── Step 2: render bars ───────────────────────────────────────────
-        n_modules     = _count_data_modules(cls, bar_data, dpi)
+        # ── 2. Render bar image (no text) ────────────────────────────────
         scaled_height = height * (module_px / ref_module_px)
         bar_img       = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
+        canvas_w      = bar_img.width
 
-        # ── Step 3: font size — max 70% of canvas width ──────────────────
-        # Using canvas_w (not scanned bar area) as reference avoids any
-        # pixel-scan inaccuracies. 70% ensures the number is always visually
-        # narrower than the barcode and can never overflow the image.
-        canvas_w   = bar_img.width
+        # ── 3. Choose font: max 70% of canvas width ───────────────────────
         max_text_w = int(canvas_w * 0.70)
         font_path  = _find_font_path()
         font       = _fit_font_to_width(code, max_text_w, font_path)
-        text_w, text_h = _measure_text(code, font)
 
-        # Extra safety: shrink until confirmed to fit with margin
-        while text_w > canvas_w - 8 and max_text_w > 20:
+        # Extra safety loop — guarantees text_pixel_width <= canvas_w - 8
+        while True:
+            bb = _textbbox_full(code, font)
+            pixel_w = bb[2] - bb[0]
+            if pixel_w <= canvas_w - 8:
+                break
             max_text_w -= 10
+            if max_text_w < 10:
+                break
             font = _fit_font_to_width(code, max_text_w, font_path)
-            text_w, text_h = _measure_text(code, font)
 
-        # ── Step 4: compose ───────────────────────────────────────────────
-        gap_px   = max(2, int(0.4 * dpi / 25.4))   # ~0.4 mm
-        pad_px   = max(2, int(0.8 * dpi / 25.4))   # ~0.8 mm bottom
-        canvas_h = bar_img.height + gap_px + text_h + pad_px
-        final    = Image.new("RGB", (canvas_w, canvas_h), "white")
+        # ── 4. Compose final image ────────────────────────────────────────
+        bb    = _textbbox_full(code, font)
+        # bb = (x0, y0, x2, y2) — all relative to draw origin (0,0)
+        # When we draw text at y=draw_y, actual pixels span [draw_y+y0 .. draw_y+y2]
+        # So canvas must be at least: bar_img.height + gap + y2 + bottom_pad
+        # gap_px is the VISUAL gap between bar bottom and first text pixel.
+
+        gap_px = max(2, int(0.3 * dpi / 25.4))   # ~0.3 mm visual gap (tight)
+        pad_px = max(4, int(1.5 * dpi / 25.4))   # ~1.5 mm bottom safety margin
+
+        # draw_y: position passed to draw.text() such that visual gap = gap_px
+        # First pixel of text = draw_y + bb[1], so draw_y = bar_img.height + gap_px - bb[1]
+        draw_y   = bar_img.height + gap_px - bb[1]
+
+        # Canvas height: must reach draw_y + bb[2] (last text pixel) + pad
+        canvas_h = draw_y + bb[3] + pad_px
+
+        final = Image.new("RGB", (canvas_w, canvas_h), "white")
         final.paste(bar_img, (0, 0))
 
         draw   = ImageDraw.Draw(final)
-        # Centre over full canvas — guaranteed within bounds
-        text_x = (canvas_w - text_w) // 2
-        draw.text((text_x, bar_img.height + gap_px), code, fill="black", font=font)
+        text_x = (canvas_w - (bb[2] - bb[0])) // 2 - bb[0]  # centre pixel content
+        draw.text((text_x, draw_y), code, fill="black", font=font)
 
+        # ── 5. Save — always update mtime even on overwrite ───────────────
         out_path = out_dir / f"{code}.png"
         final.save(str(out_path), format="PNG", dpi=(dpi, dpi))
-        # Touch mtime explicitly so file manager always shows updated time
-        import time
-        t = time.time()
-        os.utime(str(out_path), (t, t))
+        ts = time.time()
+        os.utime(str(out_path), (ts, ts))
         return out_path
