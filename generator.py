@@ -1,7 +1,10 @@
 """
 Barcode generation logic — EAN-13 and Code128.
 
-Text is always rendered manually so it aligns perfectly with the barcode width.
+Strategy: generate bars at given module_width, then SCALE the bar image so
+that the barcode data area (bars only, excluding quiet zones) matches the
+rendered text width. This guarantees perfect visual alignment regardless of
+module_width setting.
 """
 
 import io
@@ -15,10 +18,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 class BarcodeError(Exception):
-    """Raised when a barcode cannot be generated (invalid data, checksum, etc.)"""
+    pass
 
 
-# ── EAN-13 checksum ──────────────────────────────────────────────────────────
+# ── EAN-13 validation ─────────────────────────────────────────────────────────
 
 def _ean13_checksum(digits: str) -> int:
     total = 0
@@ -28,9 +31,7 @@ def _ean13_checksum(digits: str) -> int:
 
 
 def _detect_barcode_type(code: str) -> str:
-    if code.isdigit() and len(code) == 13:
-        return "ean13"
-    return "code128"
+    return "ean13" if (code.isdigit() and len(code) == 13) else "code128"
 
 
 def _validate_ean13(code: str) -> None:
@@ -41,14 +42,13 @@ def _validate_ean13(code: str) -> None:
     if expected != actual:
         raise BarcodeError(
             f"Błędna suma kontrolna EAN-13 dla '{code}': "
-            f"oczekiwano {expected}, jest {actual}"
+            f"oczekiwano cyfry kontrolnej {expected}, jest {actual}"
         )
 
 
-# ── Font helpers ─────────────────────────────────────────────────────────────
+# ── Font helpers ──────────────────────────────────────────────────────────────
 
 def _find_font_path() -> str | None:
-    """Return path to a usable TrueType font on this system."""
     if platform.system() == "Windows":
         fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
         for name in ("arial.ttf", "calibri.ttf", "verdana.ttf", "cour.ttf"):
@@ -58,58 +58,42 @@ def _find_font_path() -> str | None:
     return None
 
 
-def _fit_font_to_width(
-    text: str,
-    target_w: int,
-    font_path: str | None,
-) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """
-    Binary-search for the largest font size where rendered text_width <= target_w.
-    Returns the matching font object.
-    """
-    probe_img = Image.new("RGB", (1, 1))
-    probe_draw = ImageDraw.Draw(probe_img)
-
-    if font_path is None:
-        # PIL built-in has no size control — just return default
+def _make_font(font_path: str | None, size_px: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    if font_path:
+        try:
+            return ImageFont.truetype(font_path, size_px)
+        except Exception:
+            pass
+    try:
+        return ImageFont.load_default(size=size_px)
+    except TypeError:
         return ImageFont.load_default()
 
-    lo, hi = 4, 600
-    best_font = ImageFont.truetype(font_path, lo)
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        f = ImageFont.truetype(font_path, mid)
-        bb = probe_draw.textbbox((0, 0), text, font=f)
-        if bb[2] - bb[0] <= target_w:
-            best_font = f
-            lo = mid + 1
-        else:
-            hi = mid - 1
-    return best_font
+
+def _measure_text(text: str, font) -> tuple[int, int]:
+    probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    bb = probe.textbbox((0, 0), text, font=font)
+    return bb[2] - bb[0], bb[3] - bb[1]
 
 
-# ── Barcode rendering ─────────────────────────────────────────────────────────
+# ── Core rendering ────────────────────────────────────────────────────────────
 
-def _render_bars(
-    barcode_cls,
-    data: str,
-    height: float,
-    distance: float,
-    dpi: int,
-) -> Image.Image:
-    """Generate bar-only (no text) barcode image."""
+QUIET_ZONE_MM = 6.5   # standard EAN/Code128 quiet zone
+
+
+def _render_bars(barcode_cls, data: str, height: float, distance: float, dpi: int) -> Image.Image:
+    """Generate bar image WITHOUT text."""
     bc = barcode_cls(data, writer=ImageWriter())
-    writer_options = {
-        "module_height": height,
-        "module_width": distance,
-        "quiet_zone": 6.5,      # standard quiet zone in mm
-        "dpi": dpi,
-        "write_text": False,    # text added manually
-        "background": "white",
-        "foreground": "black",
-    }
     buf = io.BytesIO()
-    bc.write(buf, options=writer_options)
+    bc.write(buf, options={
+        "module_height": height,
+        "module_width":  distance,
+        "quiet_zone":    QUIET_ZONE_MM,
+        "dpi":           dpi,
+        "write_text":    False,
+        "background":    "white",
+        "foreground":    "black",
+    })
     buf.seek(0)
     return Image.open(buf).convert("RGB")
 
@@ -118,41 +102,46 @@ def _compose(
     bar_img: Image.Image,
     text: str,
     dpi: int,
-    gap_mm: float = 1.5,
-    pad_mm: float = 1.0,
+    distance: float,
+    font_size: float,
 ) -> Image.Image:
     """
-    Compose final image: bars on top, text below.
-    Text is scaled to exactly match the bar image width.
+    Scale bar_img so the DATA AREA (bars only, excluding quiet zones) matches
+    the rendered text width.  Then compose: bars on top, text centred below.
     """
-    bar_w = bar_img.width
-    bar_h = bar_img.height
-
+    # ── 1. Font & text size ───────────────────────────────────────────────
+    font_pt  = max(6.0, font_size * 10)          # 1.3 → 13 pt
+    font_px  = max(8, int(font_pt * dpi / 72))   # pt → px at given dpi
     font_path = _find_font_path()
-    font = _fit_font_to_width(text, bar_w, font_path)
+    font      = _make_font(font_path, font_px)
 
-    # Measure final text size
-    probe_draw = ImageDraw.Draw(bar_img)
-    bb = probe_draw.textbbox((0, 0), text, font=font)
-    text_w = bb[2] - bb[0]
-    text_h = bb[3] - bb[1]
+    text_w, text_h = _measure_text(text, font)
 
-    gap_px  = max(2, int(gap_mm  * dpi / 25.4))
-    pad_px  = max(2, int(pad_mm  * dpi / 25.4))
+    # ── 2. Scale bar image so data area == text_w ─────────────────────────
+    quiet_px  = int(QUIET_ZONE_MM * dpi / 25.4)          # quiet zone in px
+    bar_area  = max(1, bar_img.width - 2 * quiet_px)     # actual bars width
 
-    final_h = bar_h + gap_px + text_h + pad_px
-    final   = Image.new("RGB", (bar_w, final_h), "white")
+    scale     = text_w / bar_area                         # stretch factor
+    new_bar_w = int(bar_img.width  * scale)
+    new_bar_h = int(bar_img.height * scale)
+    bar_img   = bar_img.resize((new_bar_w, new_bar_h), Image.LANCZOS)
+
+    # ── 3. Compose final image ────────────────────────────────────────────
+    canvas_w = bar_img.width                              # text centres within this
+    gap_px   = max(4, int(2.0 * dpi / 25.4))             # ~2 mm gap
+    pad_px   = max(4, int(1.5 * dpi / 25.4))             # ~1.5 mm bottom padding
+
+    final = Image.new("RGB", (canvas_w, bar_img.height + gap_px + text_h + pad_px), "white")
     final.paste(bar_img, (0, 0))
 
     draw   = ImageDraw.Draw(final)
-    text_x = (bar_w - text_w) // 2
-    text_y = bar_h + gap_px
-    draw.text((text_x, text_y), text, fill="black", font=font)
+    text_x = (canvas_w - text_w) // 2
+    draw.text((text_x, bar_img.height + gap_px), text, fill="black", font=font)
 
     return final
 
 
-# ── Public generator ──────────────────────────────────────────────────────────
+# ── Public API ────────────────────────────────────────────────────────────────
 
 class BarcodeGenerator:
     def generate(
@@ -161,8 +150,9 @@ class BarcodeGenerator:
         out_dir: Path,
         height: float = 9.0,
         distance: float = 0.15,
-        font_size: float = 1.3,   # kept for API compat; width-fitting overrides size
+        font_size: float = 1.3,
         dpi: int = 300,
+        scale: float = 1.0,
     ) -> Path:
         code = code.strip()
         if not code:
@@ -173,13 +163,16 @@ class BarcodeGenerator:
         if barcode_type == "ean13":
             _validate_ean13(code)
             cls      = barcode.get_barcode_class("ean13")
-            bar_data = code[:12]   # python-barcode appends check digit
+            bar_data = code[:12]   # library appends check digit
         else:
             cls      = barcode.get_barcode_class("code128")
             bar_data = code
 
+        # scale affects font_size → drives overall image size (bars auto-fit to text)
+        effective_font_size = max(0.1, font_size * scale)
+
         bar_img  = _render_bars(cls, bar_data, height, distance, dpi)
-        final    = _compose(bar_img, code, dpi)
+        final    = _compose(bar_img, code, dpi, distance, effective_font_size)
         out_path = out_dir / f"{code}.png"
         final.save(str(out_path), format="PNG", dpi=(dpi, dpi))
         return out_path
