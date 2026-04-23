@@ -187,15 +187,16 @@ class BarcodeGenerator:
             bar_data = code
 
         # ── Step 1: integer module_px driven by scale ─────────────────────
-        # base_module_px = pixels per module at scale=1, distance setting
-        base_module_px = max(1, round(distance * dpi / 25.4))   # e.g. 0.15mm@300dpi→2px
-        module_px      = max(1, round(base_module_px * scale))  # scale multiplies it
-        module_mm      = module_px * 25.4 / dpi                 # exact mm for renderer
-        # python-barcode requires module_width >= ~0.2mm; enforce minimum
-        MIN_MODULE_MM  = 0.2
-        if module_mm < MIN_MODULE_MM:
-            module_mm  = MIN_MODULE_MM
-            module_px  = max(1, round(module_mm * dpi / 25.4))
+        # Reference: 4px/module at 300 DPI = 0.339mm ≈ ISO EAN-13 standard (0.33mm).
+        # Scale multiplies this reference.  DPI scales proportionally so physical
+        # size stays constant regardless of chosen DPI.
+        ref_module_px = max(2, round(4 * dpi / 300))   # 4px@300, 8px@600, etc.
+        module_px     = max(2, round(ref_module_px * scale))
+        module_mm     = module_px * 25.4 / dpi          # back to mm for renderer
+        # python-barcode minimum: ~0.2mm
+        if module_mm < 0.2:
+            module_mm = 0.2
+            module_px = max(2, round(module_mm * dpi / 25.4))
 
         # ── Step 2: target data width = exact, no rounding error ──────────
         n_modules      = _count_data_modules(cls, bar_data, dpi)
