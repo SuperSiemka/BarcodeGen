@@ -32,6 +32,7 @@ DEFAULT_SETTINGS: dict = {
     "dpi":        300,
     "scale":      1.0,
     "language":   "PL",
+    "theme":      "dark",
 }
 
 # ─── Path helpers (PyInstaller-safe) ─────────────────────────────────────────
@@ -90,7 +91,7 @@ class App(ctk.CTk):
         self.t         = LANG[self.lang]
         self.generator = BarcodeGenerator()
 
-        ctk.set_appearance_mode("dark")
+        ctk.set_appearance_mode(self.settings.get("theme", "dark"))
         ctk.set_default_color_theme("blue")
 
         self.title(f"{APP_NAME} v{VERSION}")
@@ -130,6 +131,12 @@ class App(ctk.CTk):
             width=60, command=self._toggle_lang,
         )
         self.lang_btn.pack(side="left", padx=(0, 8))
+
+        self.theme_btn = ctk.CTkButton(
+            btn_frame, text=self._theme_icon(),
+            width=40, command=self._toggle_theme,
+        )
+        self.theme_btn.pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
             btn_frame, text=self.t["settings"],
@@ -506,6 +513,17 @@ class App(ctk.CTk):
 
     def _other_lang(self) -> str:
         return "EN" if self.lang == "PL" else "PL"
+
+    def _toggle_theme(self):
+        current = self.settings.get("theme", "dark")
+        new_theme = "light" if current == "dark" else "dark"
+        self.settings["theme"] = new_theme
+        save_settings(self.settings)
+        ctk.set_appearance_mode(new_theme)
+        self.theme_btn.configure(text=self._theme_icon())
+
+    def _theme_icon(self) -> str:
+        return "☀" if self.settings.get("theme", "dark") == "dark" else "☾"
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
