@@ -8,13 +8,14 @@ env/
 venv/
 .venv/
 *.egg-info/
-dist/
 build/
 *.spec
 
 # PyInstaller output
-/dist/
 /build/
+
+# dist — EXE tracked in git
+!/dist/BarcodeGen.exe
 
 # App output
 /output/
