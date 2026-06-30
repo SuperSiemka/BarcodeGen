@@ -7,7 +7,6 @@ import sys
 import winreg
 import webbrowser
 import threading
-import datetime
 from pathlib import Path
 
 import customtkinter as ctk
@@ -536,9 +535,8 @@ class App(ctk.CTk):
     def _resolve_output_dir(self) -> Path:
         base = self.settings.get("output_dir", "").strip()
         base = Path(base) if base else app_dir() / "output"
-        dated = base / datetime.date.today().isoformat()
-        dated.mkdir(parents=True, exist_ok=True)
-        return dated
+        base.mkdir(parents=True, exist_ok=True)
+        return base
 
     def _set_status(self, msg: str):
         self.status_label.configure(text=f"  {msg}")

@@ -11,6 +11,10 @@ pyinstaller ^
     --name BarcodeGen ^
     --icon logo.ico ^
     --add-data "lang.py;." ^
+    --add-data "logo.png;." ^
+    --add-data "logo.ico;." ^
+    --add-data "icon.ico;." ^
+    --add-data "icon.png;." ^
     app.py
 
 echo [BarcodeGen] Done! Executable is in dist\BarcodeGen.exe

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import barcode
 from barcode.writer import ImageWriter
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 
 class BarcodeError(Exception):
@@ -172,6 +172,13 @@ class BarcodeGenerator:
         else:
             cls      = barcode.get_barcode_class("code128")
             bar_data = code
+            # Validate Code128 characters before passing to library
+            invalid_chars = [ch for ch in bar_data if ord(ch) < 32 or ord(ch) > 126]
+            if invalid_chars:
+                raise BarcodeError(
+                    f"Kod zawiera niedozwolone znaki dla Code128: "
+                    f"{', '.join(repr(c) for c in set(invalid_chars))}"
+                )
 
         # ── 1. Module size (integer px → no rounding cascade) ────────────
         ref_module_px = max(2, round(4 * dpi / 300))        # 4px @ 300 DPI
@@ -184,6 +191,16 @@ class BarcodeGenerator:
         # ── 2. Render bar image (no text) ────────────────────────────────
         scaled_height = height * (module_px / ref_module_px)
         bar_img       = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
+
+        # Crop horizontal quiet-zone whitespace, keep small side padding
+        inverted = ImageChops.invert(bar_img.convert("L"))
+        bbox = inverted.getbbox()
+        if bbox:
+            side_pad = max(4, module_px)
+            left  = max(0, bbox[0] - side_pad)
+            right = min(bar_img.width, bbox[2] + side_pad)
+            bar_img = bar_img.crop((left, 0, right, bar_img.height))
+
         canvas_w      = bar_img.width
 
         # ── 3. Choose font ────────────────────────────────────────────────
@@ -232,7 +249,8 @@ class BarcodeGenerator:
         draw.text((text_x, draw_y), code, fill="black", font=font)
 
         # ── 5. Save — always update mtime even on overwrite ───────────────
-        out_path = out_dir / f"{code}.png"
+        safe_name = "".join("_" if ch in r'\/:*?"<>|' else ch for ch in code)
+        out_path = out_dir / f"{safe_name}.png"
         final.save(str(out_path), format="PNG", dpi=(dpi, dpi))
         # os.utime(path, None) sets atime+mtime to NOW — forces Windows
         # Explorer to show the updated modification timestamp on overwrite
