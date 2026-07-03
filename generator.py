@@ -99,6 +99,41 @@ def _fit_font_to_width(text: str, target_w: int, font_path: str | None) -> Image
     return best
 
 
+# ── Human-readable text layout (tracking + gap after 7th char) ─────────────────
+
+# Extra spacing between every pair of characters, as a fraction of a digit's
+# advance width (slight — client asked for "drobne zwiększenie odstępów").
+_TRACKING_RATIO = 0.10
+# Extra gap inserted after the 7th character, as a multiple of a digit's advance
+# width (client: "na szerokość 2 lub 2,5 cyfr"). Applied universally to any code.
+_GAP_RATIO = 2.2
+_GAP_AFTER = 7
+
+
+def _text_spacing(font) -> tuple[float, float]:
+    """Return (tracking_px, gap_px) derived from the font's digit advance width."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    adv  = draw.textlength("0", font=font) or font.size
+    return adv * _TRACKING_RATIO, adv * _GAP_RATIO
+
+
+def _layout(text: str, font, tracking_px: float, gap_px: float) -> tuple[list[tuple[str, float]], float]:
+    """Lay out each character with tracking, plus an extra gap after the 7th
+    character. Returns ([(char, x_offset), ...], total_advance_width)."""
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    positions: list[tuple[str, float]] = []
+    x = 0.0
+    n = len(text)
+    for i, ch in enumerate(text):
+        positions.append((ch, x))
+        x += draw.textlength(ch, font=font)
+        if i < n - 1:                       # no trailing spacing after last char
+            x += tracking_px
+            if i == _GAP_AFTER - 1:
+                x += gap_px
+    return positions, x
+
+
 # ── Module counting ────────────────────────────────────────────────────────────
 
 _PROBE_MW_MM = 0.5
@@ -212,12 +247,14 @@ class BarcodeGenerator:
         font_path  = _find_font_path()
         font       = _fit_font_to_width(code, max_text_w, font_path)
 
-        # Shrink to satisfy both constraints
+        # Shrink to satisfy both constraints — measure the LAID-OUT width
+        # (tracking + gap included) so the spaced text still never overflows.
         while True:
+            tracking_px, gap_px = _text_spacing(font)
+            _, layout_w = _layout(code, font, tracking_px, gap_px)
             bb      = _textbbox_full(code, font)
-            pixel_w = bb[2] - bb[0]
             pixel_h = bb[3]          # bb[3] = y2 = actual bottom pixel
-            if pixel_w <= canvas_w - 8 and pixel_h <= max_text_h:
+            if layout_w <= canvas_w - 8 and pixel_h <= max_text_h:
                 break
             max_text_w -= 10
             if max_text_w < 10:
@@ -244,9 +281,13 @@ class BarcodeGenerator:
         final = Image.new("RGB", (canvas_w, canvas_h), "white")
         final.paste(bar_img, (0, 0))
 
-        draw   = ImageDraw.Draw(final)
-        text_x = (canvas_w - (bb[2] - bb[0])) // 2 - bb[0]  # centre pixel content
-        draw.text((text_x, draw_y), code, fill="black", font=font)
+        draw = ImageDraw.Draw(final)
+        # Lay out characters with tracking + gap-after-7th, centre on the canvas
+        tracking_px, gap_px = _text_spacing(font)
+        positions, layout_w = _layout(code, font, tracking_px, gap_px)
+        start_x = (canvas_w - layout_w) / 2
+        for ch, x_off in positions:
+            draw.text((start_x + x_off, draw_y), ch, fill="black", font=font)
 
         # ── 5. Save — always update mtime even on overwrite ───────────────
         safe_name = "".join("_" if ch in r'\/:*?"<>|' else ch for ch in code)

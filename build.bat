@@ -9,7 +9,7 @@ pyinstaller ^
     --onefile ^
     --windowed ^
     --name BarcodeGen ^
-    --icon logo.ico ^
+    --icon icon.ico ^
     --add-data "lang.py;." ^
     --add-data "logo.png;." ^
     --add-data "logo.ico;." ^
