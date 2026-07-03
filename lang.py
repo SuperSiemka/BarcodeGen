@@ -27,6 +27,7 @@ LANG = {
         "excel_loaded":     "Wczytano {n} kodów z pliku: {file}",
         "excel_error":      "Błąd odczytu pliku Excel:",
         "invalid_params":   "Nieprawidłowe wartości parametrów. Sprawdź wpisy.",
+        "output_dir_error": "Nie można użyć folderu wyjściowego:",
         "duplicates_found": (
             "Wykryto duplikaty: {codes}.\n"
             "Czy chcesz pominąć duplikaty i kontynuować?"
@@ -64,6 +65,7 @@ LANG = {
         "excel_loaded":     "Loaded {n} codes from file: {file}",
         "excel_error":      "Error reading Excel file:",
         "invalid_params":   "Invalid parameter values. Please check your input.",
+        "output_dir_error": "Cannot use the output folder:",
         "duplicates_found": (
             "Duplicates detected: {codes}.\n"
             "Skip duplicates and continue?"

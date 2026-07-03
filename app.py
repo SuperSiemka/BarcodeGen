@@ -64,7 +64,9 @@ def load_settings() -> dict:
                     settings[k] = int(val)
                 else:
                     settings[k] = str(val)
-            except FileNotFoundError:
+            except (FileNotFoundError, ValueError, TypeError):
+                # Missing key, or a corrupt/mistyped stored value (e.g. "300.0"
+                # where an int is expected) — fall back to the default, never crash.
                 pass
         winreg.CloseKey(key)
     except FileNotFoundError:
@@ -75,10 +77,15 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> None:
-    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_KEY)
-    for k, v in settings.items():
-        winreg.SetValueEx(key, k, 0, winreg.REG_SZ, str(v))
-    winreg.CloseKey(key)
+    # Best-effort persistence — a registry write failure (e.g. GPO restriction)
+    # must never take down the app or interrupt generation.
+    try:
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, REG_KEY)
+        for k, v in settings.items():
+            winreg.SetValueEx(key, k, 0, winreg.REG_SZ, str(v))
+        winreg.CloseKey(key)
+    except OSError:
+        pass
 
 
 # ─── Main Application ────────────────────────────────────────────────────────
@@ -393,7 +400,13 @@ class App(ctk.CTk):
                 return
             codes = unique
 
-        out_dir = self._resolve_output_dir()
+        try:
+            out_dir = self._resolve_output_dir()
+        except OSError as e:
+            # Invalid/unavailable output path (bad drive, no permission, etc.).
+            # In a --windowed exe an unhandled error would silently do nothing.
+            messagebox.showerror(APP_NAME, f"{self.t['output_dir_error']}\n{e}")
+            return
 
         existing_files = [c for c in codes if (out_dir / f"{c}.png").exists()]
         if existing_files:
@@ -413,7 +426,8 @@ class App(ctk.CTk):
         self.open_folder_btn.configure(state="disabled")
         self._last_out_dir = out_dir
 
-        s = self.settings  # snapshot
+        s = dict(self.settings)  # snapshot COPY — mid-run slider/settings changes
+                                 # must not affect codes already queued in this batch
 
         def worker():
             errors = []
@@ -426,11 +440,12 @@ class App(ctk.CTk):
                         font_size=s["font_size"], dpi=int(s["dpi"]),
                         scale=s.get("scale", 1.0),
                     )
-                    self._log(f"[OK] {code}")
-                except BarcodeError as e:
-                    errors.append((code, str(e))); self._log(f"[ERR] {code} — {e}")
-                except Exception as e:
-                    errors.append((code, str(e))); self._log(f"[ERR] {code} — {e}")
+                    # Tkinter is not thread-safe — marshal every UI update onto
+                    # the main thread via after(0, ...)
+                    self.after(0, lambda c=code: self._log(f"[OK] {c}"))
+                except Exception as e:            # BarcodeError is a subclass of Exception
+                    errors.append((code, str(e)))
+                    self.after(0, lambda c=code, err=str(e): self._log(f"[ERR] {c} — {err}"))
                 self.after(0, lambda v=i / total: self.progress_bar.set(v))
             self.after(0, lambda: self._on_generation_done(total, errors, out_dir))
 
@@ -492,11 +507,19 @@ class App(ctk.CTk):
 
         def _save():
             try:
+                height    = float(vars_["height"].get())
+                distance  = float(vars_["distance"].get())
+                font_size = float(vars_["font_size"].get())
+                dpi       = int(vars_["dpi"].get())
+                # Guard against values that would crash the generator
+                # (e.g. dpi=0 → division by zero, non-positive sizes)
+                if height <= 0 or distance <= 0 or font_size <= 0 or dpi <= 0:
+                    raise ValueError("out of range")
                 self.settings["output_dir"] = dir_var.get().strip()
-                self.settings["height"]     = float(vars_["height"].get())
-                self.settings["distance"]   = float(vars_["distance"].get())
-                self.settings["font_size"]  = float(vars_["font_size"].get())
-                self.settings["dpi"]        = int(vars_["dpi"].get())
+                self.settings["height"]     = height
+                self.settings["distance"]   = distance
+                self.settings["font_size"]  = font_size
+                self.settings["dpi"]        = dpi
                 save_settings(self.settings)
                 win.destroy()
             except ValueError:

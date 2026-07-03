@@ -242,8 +242,12 @@ class BarcodeGenerator:
         # Constraint 1: max 70% of canvas width (horizontal)
         # Constraint 2: max 40% of bar height in pixels (vertical proportionality)
         #   — prevents font being oversized relative to short bars at low scale
-        max_text_w = int(canvas_w * 0.70)
-        max_text_h = max(8, int(bar_img.height * 0.40))
+        # font_size is a text-size multiplier. 1.3 is the calibrated baseline
+        # (= current look), so default output is unchanged. The knob scales the
+        # width/height budget proportionally; clamped to avoid degenerate sizes.
+        fs_ratio   = max(0.6, min(2.0, font_size / 1.3))
+        max_text_w = int(canvas_w * 0.70 * fs_ratio)
+        max_text_h = max(8, int(bar_img.height * 0.40 * fs_ratio))
         font_path  = _find_font_path()
         font       = _fit_font_to_width(code, max_text_w, font_path)
 
