@@ -126,7 +126,7 @@ class App(ctk.CTk):
             self.iconbitmap(str(resource_path("icon.ico")))
         except Exception:
             pass
-        self.geometry("860x700")
+        self._center_on_screen(860, 700)
         self.minsize(800, 620)
         self.resizable(True, True)
 
@@ -388,7 +388,7 @@ class App(ctk.CTk):
             self.code_input.insert("1.0", "\n".join(existing + codes))
             self._set_status(self.t["excel_loaded"].format(n=len(codes), file=Path(path).name))
         except Exception as e:
-            messagebox.showerror(APP_NAME, f"{self.t['excel_error']}\n{e}")
+            messagebox.showerror(APP_NAME, f"{self.t['excel_error']}\n{e}", parent=self)
 
     def _clear_input(self):
         self.code_input.delete("1.0", "end")
@@ -404,10 +404,10 @@ class App(ctk.CTk):
         codes = [c.strip() for c in raw.splitlines() if c.strip()]
 
         if not codes:
-            messagebox.showwarning(APP_NAME, self.t["no_codes"])
+            messagebox.showwarning(APP_NAME, self.t["no_codes"], parent=self)
             return
         if len(codes) > 100:
-            messagebox.showwarning(APP_NAME, self.t["too_many"].format(n=len(codes)))
+            messagebox.showwarning(APP_NAME, self.t["too_many"].format(n=len(codes)), parent=self)
             return
 
         # Duplicates
@@ -421,7 +421,8 @@ class App(ctk.CTk):
 
         if dupes:
             if not messagebox.askyesno(APP_NAME,
-                    self.t["duplicates_found"].format(codes=", ".join(dupes))):
+                    self.t["duplicates_found"].format(codes=", ".join(dupes)),
+                    parent=self):
                 return
             codes = unique
 
@@ -430,7 +431,7 @@ class App(ctk.CTk):
         except OSError as e:
             # Invalid/unavailable output path (bad drive, no permission, etc.).
             # In a --windowed exe an unhandled error would silently do nothing.
-            messagebox.showerror(APP_NAME, f"{self.t['output_dir_error']}\n{e}")
+            messagebox.showerror(APP_NAME, f"{self.t['output_dir_error']}\n{e}", parent=self)
             return
 
         # Check against the SAME sanitized name the generator will write, so the
@@ -439,7 +440,8 @@ class App(ctk.CTk):
         if existing_files:
             ex = ", ".join(existing_files[:3]) + ("..." if len(existing_files) > 3 else "")
             if not messagebox.askyesno(APP_NAME,
-                    self.t["files_exist"].format(n=len(existing_files), examples=ex)):
+                    self.t["files_exist"].format(n=len(existing_files), examples=ex),
+                    parent=self):
                 return
 
         # Save current scale before generating
@@ -507,7 +509,7 @@ class App(ctk.CTk):
         win = ctk.CTkToplevel(self)
         self._help_win = win
         win.title(self.t["help_title"])
-        win.geometry("640x560")
+        self._center_on_parent(win, 640, 560)
         win.minsize(520, 400)
         try:
             win.iconbitmap(str(resource_path("icon.ico")))
@@ -533,7 +535,7 @@ class App(ctk.CTk):
     def _open_settings(self):
         win = ctk.CTkToplevel(self)
         win.title(self.t["settings"])
-        win.geometry("480x360")
+        self._center_on_parent(win, 480, 360)
         win.resizable(False, False)
         win.grab_set()
         win.grid_columnconfigure(1, weight=1)
@@ -657,6 +659,19 @@ class App(ctk.CTk):
         return "☀" if self.settings.get("theme", "dark") == "dark" else "☾"
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _center_on_screen(self, w: int, h: int):
+        x = max(0, (self.winfo_screenwidth()  - w) // 2)
+        y = max(0, (self.winfo_screenheight() - h) // 2 - 20)  # optically centred
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _center_on_parent(self, win, w: int, h: int):
+        # Centre a child window over the app window (which itself opens centred
+        # on screen) — follows the app if the user moved it to another monitor.
+        self.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width()  - w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - h) // 2
+        win.geometry(f"{w}x{h}+{max(0, x)}+{max(0, y)}")
 
     def _resolve_output_dir(self) -> Path:
         base = self.settings.get("output_dir", "").strip()
