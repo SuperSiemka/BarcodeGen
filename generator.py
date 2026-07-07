@@ -25,6 +25,20 @@ class BarcodeError(Exception):
     pass
 
 
+# Characters illegal in Windows filenames — replaced with "_" when saving.
+_ILLEGAL_FS = r'\/:*?"<>|'
+
+
+def safe_filename(code: str) -> str:
+    """Map a code to the on-disk PNG stem, replacing filesystem-illegal chars.
+
+    Shared with the UI so its "file already exists?" check inspects the SAME
+    name the generator will actually write (otherwise the overwrite prompt is
+    silently skipped for codes containing / \\ : * ? " < > |).
+    """
+    return "".join("_" if ch in _ILLEGAL_FS else ch for ch in code)
+
+
 # ── EAN-13 validation ─────────────────────────────────────────────────────────
 
 def _ean13_checksum(digits: str) -> int:
@@ -81,17 +95,22 @@ def _textbbox_full(text: str, font) -> tuple[int, int, int, int]:
     return draw.textbbox((0, 0), text, font=font)
 
 
-def _fit_font_to_width(text: str, target_w: int, font_path: str | None) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Binary-search for largest font size where pixel width <= target_w."""
-    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+def _fit_font_to_height(text: str, target_h: int, font_path: str | None) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Binary-search for the largest font whose glyph height (bb[3]-bb[1]) <= target_h.
+
+    The font is sized purely from target_h — an ABSOLUTE pixel height derived from
+    the text-scale knob and DPI. It does NOT depend on the barcode width or bar
+    height, so text size is independent of the code's dimensions (client request).
+    """
     if font_path is None:
-        return _make_font(None, 12)
-    lo, hi, best = 4, 800, _make_font(font_path, 4)
+        return _make_font(None, max(8, target_h))
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    lo, hi, best = 4, 2000, _make_font(font_path, 4)
     while lo <= hi:
         mid  = (lo + hi) // 2
         font = ImageFont.truetype(font_path, mid)
         bb   = draw.textbbox((0, 0), text, font=font)
-        if bb[2] - bb[0] <= target_w:
+        if (bb[3] - bb[1]) <= target_h:
             best = font
             lo   = mid + 1
         else:
@@ -108,6 +127,13 @@ _TRACKING_RATIO = 0.10
 # width (client: "na szerokość 2 lub 2,5 cyfr"). Applied universally to any code.
 _GAP_RATIO = 2.2
 _GAP_AFTER = 7
+
+# Absolute human-readable text height, in mm PER UNIT of the text-scale knob.
+# Calibrated so the default (font_size=1.3) reproduces the historic EAN-13 look
+# (~26 px glyph height @ 300 DPI). Because the target height is derived only from
+# this constant, font_size and DPI — never from the barcode's width or bar height —
+# the text size is fully independent of the code's dimensions.
+_BASE_TEXT_MM = 1.693
 
 
 def _text_spacing(font) -> tuple[float, float]:
@@ -198,6 +224,8 @@ class BarcodeGenerator:
         code = code.strip()
         if not code:
             raise BarcodeError("Pusty kod")
+        if dpi <= 0:
+            raise BarcodeError(f"DPI musi być dodatnie, otrzymano: {dpi}")
 
         barcode_type = _detect_barcode_type(code)
         if barcode_type == "ean13":
@@ -215,16 +243,22 @@ class BarcodeGenerator:
                     f"{', '.join(repr(c) for c in set(invalid_chars))}"
                 )
 
-        # ── 1. Module size (integer px → no rounding cascade) ────────────
-        ref_module_px = max(2, round(4 * dpi / 300))        # 4px @ 300 DPI
-        module_px     = max(2, round(ref_module_px * scale))
+        # ── 1. Module size ───────────────────────────────────────────────
+        # `distance` is the module width in mm (UI: "Szerokość modułu (mm)").
+        # `scale` is the overall size multiplier (UI slider "Rozmiar kodu").
+        # Snap the requested width to an integer number of pixels so every bar
+        # is edge-aligned (crisp, no sub-pixel blur), then convert back to mm.
+        req_module_mm = max(0.05, distance) * scale
+        module_px     = max(2, round(req_module_mm * dpi / 25.4))
         module_mm     = module_px * 25.4 / dpi
-        if module_mm < 0.2:                                  # library minimum
+        if module_mm < 0.2:                                  # scanner/library minimum
             module_mm  = 0.2
             module_px  = max(2, round(module_mm * dpi / 25.4))
 
         # ── 2. Render bar image (no text) ────────────────────────────────
-        scaled_height = height * (module_px / ref_module_px)
+        # Bar height is `height` (mm) times the overall size multiplier — kept
+        # independent of module_px so width and height scale coherently.
+        scaled_height = height * scale
         bar_img       = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
 
         # Crop horizontal quiet-zone whitespace, keep small side padding
@@ -238,32 +272,15 @@ class BarcodeGenerator:
 
         canvas_w      = bar_img.width
 
-        # ── 3. Choose font ────────────────────────────────────────────────
-        # Constraint 1: max 70% of canvas width (horizontal)
-        # Constraint 2: max 40% of bar height in pixels (vertical proportionality)
-        #   — prevents font being oversized relative to short bars at low scale
-        # font_size is a text-size multiplier. 1.3 is the calibrated baseline
-        # (= current look), so default output is unchanged. The knob scales the
-        # width/height budget proportionally; clamped to avoid degenerate sizes.
-        fs_ratio   = max(0.6, min(2.0, font_size / 1.3))
-        max_text_w = int(canvas_w * 0.70 * fs_ratio)
-        max_text_h = max(8, int(bar_img.height * 0.40 * fs_ratio))
-        font_path  = _find_font_path()
-        font       = _fit_font_to_width(code, max_text_w, font_path)
-
-        # Shrink to satisfy both constraints — measure the LAID-OUT width
-        # (tracking + gap included) so the spaced text still never overflows.
-        while True:
-            tracking_px, gap_px = _text_spacing(font)
-            _, layout_w = _layout(code, font, tracking_px, gap_px)
-            bb      = _textbbox_full(code, font)
-            pixel_h = bb[3]          # bb[3] = y2 = actual bottom pixel
-            if layout_w <= canvas_w - 8 and pixel_h <= max_text_h:
-                break
-            max_text_w -= 10
-            if max_text_w < 10:
-                break
-            font = _fit_font_to_width(code, max_text_w, font_path)
+        # ── 3. Choose font (ABSOLUTE size — independent of code dimensions) ─
+        # `font_size` is the text-scale knob (UI: "Skala tekstu"). The glyph
+        # height is derived only from font_size × DPI, NOT from the barcode
+        # width or bar height — so growing the code (height / module width /
+        # overall scale) does NOT change the text, and the knob keeps scaling
+        # linearly with no upper cap (client-reported bugs #1a and #1b).
+        target_text_h = max(6, round(font_size * _BASE_TEXT_MM * dpi / 25.4))
+        font_path     = _find_font_path()
+        font          = _fit_font_to_height(code, target_text_h, font_path)
 
         # ── 4. Compose final image ────────────────────────────────────────
         bb    = _textbbox_full(code, font)
@@ -282,20 +299,25 @@ class BarcodeGenerator:
         # Canvas height: must reach draw_y + bb[2] (last text pixel) + pad
         canvas_h = draw_y + bb[3] + pad_px
 
+        # Because the font is now absolute, the laid-out text can be WIDER than the
+        # bars (big text-scale, or a long code). Widen the canvas to fit it so the
+        # text is never clipped, then centre both the bars and the text.
+        tracking_px, gap_px_layout = _text_spacing(font)
+        positions, layout_w = _layout(code, font, tracking_px, gap_px_layout)
+        side_pad = max(4, module_px)
+        canvas_w = max(canvas_w, int(layout_w) + 2 * side_pad + 8)
+
         final = Image.new("RGB", (canvas_w, canvas_h), "white")
-        final.paste(bar_img, (0, 0))
+        final.paste(bar_img, ((canvas_w - bar_img.width) // 2, 0))
 
         draw = ImageDraw.Draw(final)
-        # Lay out characters with tracking + gap-after-7th, centre on the canvas
-        tracking_px, gap_px = _text_spacing(font)
-        positions, layout_w = _layout(code, font, tracking_px, gap_px)
+        # Centre the laid-out text (tracking + gap-after-7th) on the canvas
         start_x = (canvas_w - layout_w) / 2
         for ch, x_off in positions:
             draw.text((start_x + x_off, draw_y), ch, fill="black", font=font)
 
         # ── 5. Save — always update mtime even on overwrite ───────────────
-        safe_name = "".join("_" if ch in r'\/:*?"<>|' else ch for ch in code)
-        out_path = out_dir / f"{safe_name}.png"
+        out_path = out_dir / f"{safe_filename(code)}.png"
         final.save(str(out_path), format="PNG", dpi=(dpi, dpi))
         # os.utime(path, None) sets atime+mtime to NOW — forces Windows
         # Explorer to show the updated modification timestamp on overwrite

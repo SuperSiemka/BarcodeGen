@@ -14,7 +14,7 @@ from tkinter import filedialog, messagebox
 import tkinter as tk
 from PIL import Image as PILImage
 
-from generator import BarcodeGenerator, BarcodeError
+from generator import BarcodeGenerator, BarcodeError, safe_filename
 from lang import LANG
 
 # ─── Constants ───────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ REG_KEY  = r"Software\BarcodeGen"
 DEFAULT_SETTINGS: dict = {
     "output_dir": "",
     "height":     9.0,
-    "distance":   0.15,
+    "distance":   0.33,     # module width in mm (EAN-13 nominal SC2)
     "font_size":  1.3,
     "dpi":        300,
     "scale":      1.0,
@@ -73,6 +73,11 @@ def load_settings() -> dict:
         pass
     # Clamp scale to valid range — guards against stale registry values
     settings["scale"] = max(0.5, min(3.0, settings["scale"]))
+    # Migrate the old dead "distance" default (0.15) — the field never affected
+    # output before this release, so a stored 0.15 can only be that legacy value.
+    # Reset it to the working default rather than render suddenly-narrow bars.
+    if abs(settings["distance"] - 0.15) < 1e-9:
+        settings["distance"] = DEFAULT_SETTINGS["distance"]
     return settings
 
 
@@ -149,6 +154,11 @@ class App(ctk.CTk):
             width=40, command=self._toggle_theme,
         )
         self.theme_btn.pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            btn_frame, text=self.t["help"],
+            width=100, command=self._open_help,
+        ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
             btn_frame, text=self.t["settings"],
@@ -345,7 +355,7 @@ class App(ctk.CTk):
     def _import_excel(self):
         path = filedialog.askopenfilename(
             title=self.t["import_excel"],
-            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
         )
         if not path:
             return
@@ -408,7 +418,9 @@ class App(ctk.CTk):
             messagebox.showerror(APP_NAME, f"{self.t['output_dir_error']}\n{e}")
             return
 
-        existing_files = [c for c in codes if (out_dir / f"{c}.png").exists()]
+        # Check against the SAME sanitized name the generator will write, so the
+        # overwrite prompt also fires for codes containing / \ : * ? " < > |.
+        existing_files = [c for c in codes if (out_dir / f"{safe_filename(c)}.png").exists()]
         if existing_files:
             ex = ", ".join(existing_files[:3]) + ("..." if len(existing_files) > 3 else "")
             if not messagebox.askyesno(APP_NAME,
@@ -466,6 +478,39 @@ class App(ctk.CTk):
     def _open_output_folder(self):
         if hasattr(self, "_last_out_dir") and self._last_out_dir.exists():
             os.startfile(str(self._last_out_dir))
+
+    # ── Help / manual window ──────────────────────────────────────────────────
+
+    def _open_help(self):
+        # Reuse an already-open manual window instead of stacking duplicates.
+        if getattr(self, "_help_win", None) is not None and self._help_win.winfo_exists():
+            self._help_win.lift()
+            self._help_win.focus()
+            return
+
+        win = ctk.CTkToplevel(self)
+        self._help_win = win
+        win.title(self.t["help_title"])
+        win.geometry("640x560")
+        win.minsize(520, 400)
+        try:
+            win.iconbitmap(str(resource_path("icon.ico")))
+        except Exception:
+            pass
+        win.grid_columnconfigure(0, weight=1)
+        win.grid_rowconfigure(0, weight=1)
+        # Defer grab_set: on Windows a Toplevel must be viewable first, otherwise
+        # grab_set() can raise and leave the window unusable.
+        win.after(200, lambda: win.grab_set() if win.winfo_exists() else None)
+
+        box = ctk.CTkTextbox(win, font=ctk.CTkFont(size=13), wrap="word")
+        box.grid(row=0, column=0, sticky="nsew", padx=16, pady=(16, 8))
+        box.insert("1.0", self.t["help_body"])
+        box.configure(state="disabled")
+
+        ctk.CTkButton(
+            win, text=self.t["help_close"], width=120, command=win.destroy,
+        ).grid(row=1, column=0, pady=(0, 16))
 
     # ── Settings window ───────────────────────────────────────────────────────
 
@@ -531,6 +576,9 @@ class App(ctk.CTk):
     # ── Language ──────────────────────────────────────────────────────────────
 
     def _toggle_lang(self):
+        # Preserve the codes the user already typed — rebuilding the UI recreates
+        # the textbox, which would otherwise wipe them on every language switch.
+        preserved = self.code_input.get("1.0", "end").strip()
         self.lang = "EN" if self.lang == "PL" else "PL"
         self.settings["language"] = self.lang
         save_settings(self.settings)
@@ -538,6 +586,8 @@ class App(ctk.CTk):
         for w in self.winfo_children():
             w.destroy()
         self._build_ui()
+        if preserved:
+            self.code_input.insert("1.0", preserved)
 
     def _other_lang(self) -> str:
         return "EN" if self.lang == "PL" else "PL"
