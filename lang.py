@@ -30,8 +30,9 @@ LANG = {
             "       – Wysokość kodu (mm) — wysokość samych kresek.\n"
             "       – Szerokość modułu (mm) — szerokość najcieńszej kreski; to ONA\n"
             "         decyduje o końcowej szerokości kodu (0.33 mm = nominał EAN).\n"
-            "       – Skala tekstu — rozmiar cyfr pod kodem. Jest NIEZALEŻNY od\n"
-            "         wysokości/szerokości kodu i rośnie liniowo bez ograniczenia.\n"
+            "       – Wysokość tekstu (mm) — wysokość cyfr pod kodem w milimetrach\n"
+            "         (2.2 mm = wygląd domyślny). Jest NIEZALEŻNA od wysokości\n"
+            "         i szerokości kodu, rośnie liniowo bez ograniczenia.\n"
             "       – DPI — rozdzielczość (domyślnie 300; punktów na cal).\n"
             "\n"
             "4. FOLDER WYJŚCIOWY\n"
@@ -56,7 +57,7 @@ LANG = {
         "output_dir":       "Folder wyjściowy:",
         "param_height":     "Wysokość kodu (mm):",
         "param_distance":   "Szerokość modułu (mm):",
-        "param_font_size":  "Skala tekstu:",
+        "param_font_size":  "Wysokość tekstu (mm):",
         "param_dpi":        "DPI:",
         "scale_label":      "Rozmiar kodu:",
         "scale_unit":       "×",
@@ -110,8 +111,9 @@ LANG = {
             "       – Bar height (mm) — height of the bars only.\n"
             "       – Module width (mm) — width of the thinnest bar; THIS drives\n"
             "         the final barcode width (0.33 mm = EAN nominal).\n"
-            "       – Text scale — size of the digits below the code. INDEPENDENT\n"
-            "         of the code’s height/width, grows linearly with no cap.\n"
+            "       – Text height (mm) — height of the digits below the code, in\n"
+            "         millimetres (2.2 mm = the default look). INDEPENDENT of the\n"
+            "         code’s height/width, grows linearly with no cap.\n"
             "       – DPI — resolution (default 300; dots per inch).\n"
             "\n"
             "4. OUTPUT FOLDER\n"
@@ -136,7 +138,7 @@ LANG = {
         "output_dir":       "Output folder:",
         "param_height":     "Bar height (mm):",
         "param_distance":   "Module width (mm):",
-        "param_font_size":  "Text scale:",
+        "param_font_size":  "Text height (mm):",
         "param_dpi":        "DPI:",
         "scale_label":      "Barcode size:",
         "scale_unit":       "×",

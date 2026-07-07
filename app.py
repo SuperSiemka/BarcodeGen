@@ -14,7 +14,8 @@ from tkinter import filedialog, messagebox
 import tkinter as tk
 from PIL import Image as PILImage
 
-from generator import BarcodeGenerator, BarcodeError, safe_filename
+from generator import (BarcodeGenerator, BarcodeError, safe_filename,
+                       _LEGACY_TEXT_MM_PER_UNIT)
 from lang import LANG
 
 # ─── Constants ───────────────────────────────────────────────────────────────
@@ -27,7 +28,8 @@ DEFAULT_SETTINGS: dict = {
     "output_dir": "",
     "height":     9.0,
     "distance":   0.33,     # module width in mm (EAN-13 nominal SC2)
-    "font_size":  1.3,
+    "font_size":  2.2,      # text height in mm (2.2 = historic default look)
+    "font_unit":  "mm",     # marker: font_size stored in mm (absent = legacy unitless)
     "dpi":        300,
     "scale":      1.0,
     "language":   "PL",
@@ -52,6 +54,7 @@ def app_dir() -> Path:
 
 def load_settings() -> dict:
     settings = dict(DEFAULT_SETTINGS)
+    found: set = set()
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_KEY)
         for k, default in DEFAULT_SETTINGS.items():
@@ -64,6 +67,7 @@ def load_settings() -> dict:
                     settings[k] = int(val)
                 else:
                     settings[k] = str(val)
+                found.add(k)
             except (FileNotFoundError, ValueError, TypeError):
                 # Missing key, or a corrupt/mistyped stored value (e.g. "300.0"
                 # where an int is expected) — fall back to the default, never crash.
@@ -73,6 +77,13 @@ def load_settings() -> dict:
         pass
     # Clamp scale to valid range — guards against stale registry values
     settings["scale"] = max(0.5, min(3.0, settings["scale"]))
+    # Migrate the legacy unitless "Skala tekstu" to millimetres. Stored values
+    # written before the mm change carry no "font_unit" marker — convert them
+    # once (e.g. old default 1.3 -> 2.2 mm), after which save_settings() always
+    # writes the marker.
+    if "font_size" in found and "font_unit" not in found:
+        settings["font_size"] = round(settings["font_size"] * _LEGACY_TEXT_MM_PER_UNIT, 1)
+    settings["font_unit"] = "mm"
     # Migrate the old dead "distance" default (0.15) — the field never affected
     # output before this release, so a stored 0.15 can only be that legacy value.
     # Reset it to the working default rather than render suddenly-narrow bars.

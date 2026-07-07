@@ -30,7 +30,9 @@ _OUT = Path(tempfile.mkdtemp())
 
 
 def _render(**kw):
-    defaults = dict(height=9.0, distance=0.33, font_size=1.3, dpi=300, scale=1.0)
+    # font_size is the text height in MILLIMETRES (2.2 mm = historic default look;
+    # the legacy unitless knob's 1.3 was migrated as 1.3 * 1.693 = 2.2 mm)
+    defaults = dict(height=9.0, distance=0.33, font_size=2.2, dpi=300, scale=1.0)
     defaults.update(kw)
     return _G.generate(CODE, _OUT, **defaults)
 

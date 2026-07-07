@@ -129,12 +129,13 @@ _TRACKING_RATIO = 0.10
 _GAP_RATIO = 2.2
 _GAP_AFTER = 7
 
-# Absolute human-readable text height, in mm PER UNIT of the text-scale knob.
-# Calibrated so the default (font_size=1.3) reproduces the historic EAN-13 look
-# (~26 px glyph height @ 300 DPI). Because the target height is derived only from
-# this constant, font_size and DPI — never from the barcode's width or bar height —
-# the text size is fully independent of the code's dimensions.
-_BASE_TEXT_MM = 1.693
+# Conversion factor from the LEGACY unitless text-scale knob to millimetres.
+# The knob is now expressed directly in mm (client request: "czy skala czcionki
+# również jest w mm?"), so this constant only serves the one-time registry
+# migration in app.load_settings(): old_value * _LEGACY_TEXT_MM_PER_UNIT = mm.
+# 1.3 (old default) * 1.693 = 2.2 mm, which reproduces the historic EAN-13 look
+# (~26 px glyph height @ 300 DPI).
+_LEGACY_TEXT_MM_PER_UNIT = 1.693
 
 
 def _text_spacing(font) -> tuple[float, float]:
@@ -219,7 +220,7 @@ class BarcodeGenerator:
         height:    float = 9.0,
         distance:  float = 0.33,   # keep in sync with app.DEFAULT_SETTINGS —
                                    # 0.15 was the legacy dead value (see load_settings migration)
-        font_size: float = 1.3,
+        font_size: float = 2.2,    # text height in MILLIMETRES (glyph ink height)
         dpi:       int   = 300,
         scale:     float = 1.0,
     ) -> Path:
@@ -278,12 +279,12 @@ class BarcodeGenerator:
         canvas_w      = bar_img.width
 
         # ── 3. Choose font (ABSOLUTE size — independent of code dimensions) ─
-        # `font_size` is the text-scale knob (UI: "Skala tekstu"). The glyph
-        # height is derived only from font_size × DPI, NOT from the barcode
-        # width or bar height — so growing the code (height / module width /
-        # overall scale) does NOT change the text, and the knob keeps scaling
-        # linearly with no upper cap (client-reported bugs #1a and #1b).
-        target_text_h = max(6, round(font_size * _BASE_TEXT_MM * dpi / 25.4))
+        # `font_size` is the text height in mm (UI: "Wysokość tekstu (mm)").
+        # The glyph height is derived only from font_size × DPI, NOT from the
+        # barcode width or bar height — so growing the code (height / module
+        # width / overall scale) does NOT change the text, and the knob keeps
+        # scaling linearly with no upper cap (client-reported bugs #1a and #1b).
+        target_text_h = max(6, round(font_size * dpi / 25.4))
         font_path     = _find_font_path()
         font          = _fit_font_to_height(code, target_text_h, font_path)
 
