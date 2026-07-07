@@ -2,9 +2,12 @@
 Barcode generation logic — EAN-13 and Code128.
 
 Scaling strategy:
-  1. scale controls module_px (integer px per bar module, no fractions).
-  2. Bar height scales proportionally with module_px.
-  3. Font fitted to 70% of canvas width — never overflows horizontally.
+  1. `distance` (mm) sets the module width, snapped to integer px at the
+     given DPI; `scale` multiplies both module width and bar height.
+  2. Bar height = `height` (mm) × scale.
+  3. Font size is ABSOLUTE: `font_size` is the glyph ink height in mm,
+     independent of module width / bar height / scale. If the text is wider
+     than the bars, the canvas widens — the font is never shrunk.
   4. Canvas height computed from textbbox y2 (not y2-y0) so vertical
      clipping is impossible regardless of scale or font metrics.
   5. No post-generation PIL scaling → zero blur, crisp bar edges.
@@ -29,6 +32,14 @@ class BarcodeError(Exception):
 # Characters illegal in Windows filenames — replaced with "_" when saving.
 _ILLEGAL_FS = r'\/:*?"<>|'
 
+# Windows reserved device names — a file literally named "CON.png" cannot be
+# created on Windows, so such stems get an "_" prefix.
+_WIN_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def safe_filename(code: str) -> str:
     """Map a code to the on-disk PNG stem, replacing filesystem-illegal chars.
@@ -37,7 +48,10 @@ def safe_filename(code: str) -> str:
     name the generator will actually write (otherwise the overwrite prompt is
     silently skipped for codes containing / \\ : * ? " < > |).
     """
-    return "".join("_" if ch in _ILLEGAL_FS else ch for ch in code)
+    stem = "".join("_" if ch in _ILLEGAL_FS else ch for ch in code)
+    if stem.upper() in _WIN_RESERVED:
+        stem = "_" + stem
+    return stem
 
 
 # ── EAN-13 validation ─────────────────────────────────────────────────────────

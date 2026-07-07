@@ -36,6 +36,16 @@ DEFAULT_SETTINGS: dict = {
     "theme":      "dark",
 }
 
+# Sane min/max for numeric parameters — enforced on registry load AND in the
+# settings dialog. Prevents e.g. dpi=10000 + height=1000 from generating a
+# multi-gigapixel image that hangs or crashes the app.
+PARAM_RANGES: dict = {
+    "height":    (1.0,  150.0),   # mm
+    "distance":  (0.05, 10.0),    # mm (generator floor 0.05, scanner min 0.2 handled there)
+    "font_size": (0.5,  15.0),    # mm (glyph ink height)
+    "dpi":       (72,   1200),
+}
+
 # ─── Path helpers (PyInstaller-safe) ─────────────────────────────────────────
 
 def resource_path(name: str) -> Path:
@@ -77,6 +87,12 @@ def load_settings() -> dict:
         pass
     # Clamp scale to valid range — guards against stale registry values
     settings["scale"] = max(0.5, min(3.0, settings["scale"]))
+    # Validate enum-like values — a corrupt registry entry (e.g. language="DE")
+    # would otherwise crash the app at startup with KeyError in LANG[...]
+    if settings["language"] not in LANG:
+        settings["language"] = DEFAULT_SETTINGS["language"]
+    if settings["theme"] not in ("dark", "light"):
+        settings["theme"] = DEFAULT_SETTINGS["theme"]
     # Migrate the legacy unitless "Skala tekstu" to millimetres. Stored values
     # written before the mm change carry no "font_unit" marker — convert them
     # once (e.g. old default 1.3 -> 2.2 mm), after which save_settings() always
@@ -89,6 +105,11 @@ def load_settings() -> dict:
     # Reset it to the working default rather than render suddenly-narrow bars.
     if abs(settings["distance"] - 0.15) < 1e-9:
         settings["distance"] = DEFAULT_SETTINGS["distance"]
+    # Clamp numeric parameters to sane ranges (see PARAM_RANGES) — AFTER the
+    # migrations above, so a converted legacy value (e.g. font 12 -> 20.3 mm)
+    # cannot escape the range.
+    for _k, (_lo, _hi) in PARAM_RANGES.items():
+        settings[_k] = max(_lo, min(_hi, settings[_k]))
     return settings
 
 
@@ -436,6 +457,19 @@ class App(ctk.CTk):
 
         # Check against the SAME sanitized name the generator will write, so the
         # overwrite prompt also fires for codes containing / \ : * ? " < > |.
+        # Filename collisions: different codes can sanitize to the same file
+        # ('AB/CD' and 'AB?CD' → both 'AB_CD.png') — the later one would
+        # silently overwrite the earlier. Warn and let the user decide.
+        _by_name: dict = {}
+        for c in codes:
+            _by_name.setdefault(safe_filename(c), []).append(c)
+        _collisions = [", ".join(v) for v in _by_name.values() if len(v) > 1]
+        if _collisions:
+            if not messagebox.askyesno(APP_NAME,
+                    self.t["name_collision"].format(groups="\n".join(_collisions)),
+                    parent=self):
+                return
+
         existing_files = [c for c in codes if (out_dir / f"{safe_filename(c)}.png").exists()]
         if existing_files:
             ex = ", ".join(existing_files[:3]) + ("..." if len(existing_files) > 3 else "")
@@ -574,10 +608,13 @@ class App(ctk.CTk):
                 distance  = float(vars_["distance"].get())
                 font_size = float(vars_["font_size"].get())
                 dpi       = int(vars_["dpi"].get())
-                # Guard against values that would crash the generator
-                # (e.g. dpi=0 → division by zero, non-positive sizes)
-                if height <= 0 or distance <= 0 or font_size <= 0 or dpi <= 0:
-                    raise ValueError("out of range")
+                # Guard against values that would crash or hang the generator
+                # (dpi=0 → division by zero; dpi=10000 → gigapixel image, etc.)
+                for _key, _val in (("height", height), ("distance", distance),
+                                   ("font_size", font_size), ("dpi", dpi)):
+                    _lo, _hi = PARAM_RANGES[_key]
+                    if not (_lo <= _val <= _hi):
+                        raise ValueError(f"{_key} out of range [{_lo}, {_hi}]")
                 self.settings["output_dir"] = dir_var.get().strip()
                 self.settings["height"]     = height
                 self.settings["distance"]   = distance

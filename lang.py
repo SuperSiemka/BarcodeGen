@@ -84,6 +84,10 @@ LANG = {
             "{n} plik(ów) już istnieje (np. {examples}).\n"
             "Czy nadpisać istniejące pliki?"
         ),
+        "name_collision": (
+            "Następujące kody dadzą ten sam plik wynikowy (kolejny nadpisze "
+            "poprzedni):\n{groups}\nCzy kontynuować mimo to?"
+        ),
         "excel_hint": (
             "Wskazówka: plik Excel powinien zawierać kody w pierwszej kolumnie "
             "(A) pierwszego arkusza, bez nagłówka."
@@ -169,6 +173,10 @@ LANG = {
         "files_exist": (
             "{n} file(s) already exist (e.g. {examples}).\n"
             "Overwrite existing files?"
+        ),
+        "name_collision": (
+            "The following codes produce the same output file (the later one "
+            "overwrites the earlier):\n{groups}\nContinue anyway?"
         ),
         "excel_hint": (
             "Hint: the Excel file should contain codes in the first column (A) "
