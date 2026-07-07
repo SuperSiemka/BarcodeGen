@@ -30,6 +30,12 @@ settings.json
 *.suo
 *.user
 
+# Local backup snapshots (N12 — not part of the app)
+*_backup_*.py
+*_backup_*.bat
+*_backup_*.ico
+*_backup_*.png
+
 # OS
 .DS_Store
 Thumbs.db

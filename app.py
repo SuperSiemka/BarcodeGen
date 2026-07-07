@@ -3,7 +3,9 @@ BarcodeGen — Desktop barcode generator (EAN-13 / Code128)
 """
 
 import os
+import re
 import sys
+import math
 import winreg
 import webbrowser
 import threading
@@ -15,13 +17,13 @@ import tkinter as tk
 from PIL import Image as PILImage
 
 from generator import (BarcodeGenerator, BarcodeError, safe_filename,
-                       _LEGACY_TEXT_MM_PER_UNIT)
+                       _ean13_checksum, _LEGACY_TEXT_MM_PER_UNIT)
 from lang import LANG
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
 APP_NAME = "BarcodeGen"
-VERSION  = "1.0.1"
+VERSION  = "1.0.2"
 REG_KEY  = r"Software\BarcodeGen"
 
 DEFAULT_SETTINGS: dict = {
@@ -85,6 +87,13 @@ def load_settings() -> dict:
         winreg.CloseKey(key)
     except FileNotFoundError:
         pass
+    # Reject non-finite stored numbers (e.g. a registry value of "nan"/"inf",
+    # which parse fine as float but slip through min()/max() clamps and would
+    # silently become the range maximum). Fall back to the default for any such.
+    for _k, _default in DEFAULT_SETTINGS.items():
+        if isinstance(_default, float) and isinstance(settings[_k], float) \
+                and not math.isfinite(settings[_k]):
+            settings[_k] = _default
     # Clamp scale to valid range — guards against stale registry values
     settings["scale"] = max(0.5, min(3.0, settings["scale"]))
     # Validate enum-like values — a corrupt registry entry (e.g. language="DE")
@@ -123,6 +132,37 @@ def save_settings(settings: dict) -> None:
         winreg.CloseKey(key)
     except OSError:
         pass
+
+
+def _normalize_imported_code(raw) -> tuple[str, str | None]:
+    """Turn one Excel cell value into a barcode string.
+
+    Returns (code, note). `note` is a human-readable message when the value was
+    auto-corrected, else None. Non-numeric / text cells pass through unchanged
+    (apart from stripping).
+
+    Rationale (bug K1/N2): Excel stores a typed number as a Number, so an EAN-13
+    with a leading zero (e.g. 0501234123454) is physically saved as 501234123454 —
+    the zero is gone before openpyxl ever sees it, and openpyxl returns it as an
+    int. A 12-digit number that becomes a VALID EAN-13 once a leading zero is
+    restored is almost certainly a truncated EAN, so we restore it. A plain
+    12-digit code meant for Code128 would have to coincidentally carry a valid
+    EAN-13 checksum to be affected, which is why we gate on that check.
+    """
+    if isinstance(raw, bool):                       # bool is a subclass of int
+        return str(raw).strip(), None
+    if isinstance(raw, int) or (isinstance(raw, float) and float(raw).is_integer()):
+        s = str(int(raw))
+        if len(s) == 12 and s.isdigit():
+            padded = "0" + s
+            if _ean13_checksum(padded) == int(padded[-1]):
+                return padded, f"{s} → {padded} (przywrócono wiodące zero EAN-13)"
+        return s, None
+    s = str(raw).strip()
+    m = re.fullmatch(r"(\d{13})\.0", s)             # float artifact "…654.0"
+    if m:
+        return m.group(1), f"{s} → {m.group(1)} (usunięto '.0')"
+    return s, None
 
 
 # ─── Main Application ────────────────────────────────────────────────────────
@@ -359,7 +399,7 @@ class App(ctk.CTk):
             lbl.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
             return lbl
 
-        _lbl("Wszelkie prawa zastrzeżone © 2026  |  by ").pack(side="left")
+        _lbl(self.t["footer_copyright"]).pack(side="left")
         _link("dCoded", "https://www.dcoded.pl").pack(side="left")
         _lbl(" & ").pack(side="left")
         _link("id3ntity", "https://www.id3ntity.pl").pack(side="left")
@@ -375,6 +415,8 @@ class App(ctk.CTk):
     def _on_scale_entry(self, _event=None):
         try:
             val = float(self._scale_entry.get().replace(",", "."))
+            if not math.isfinite(val):          # reject "nan"/"inf" — would clamp to max
+                raise ValueError
             val = max(0.5, min(3.0, round(val, 1)))
             self._scale_var.set(val)
             self._scale_entry.delete(0, "end")
@@ -398,16 +440,30 @@ class App(ctk.CTk):
             import openpyxl
             wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
             ws = wb.worksheets[0]
-            codes = [
-                str(row[0]).strip()
-                for row in ws.iter_rows(min_row=1, values_only=True)
-                if row and row[0] is not None and str(row[0]).strip()
-            ]
+            codes, corrected = [], []
+            for row in ws.iter_rows(min_row=1, values_only=True):
+                if not row or row[0] is None:
+                    continue
+                code, note = _normalize_imported_code(row[0])
+                if not code:
+                    continue
+                if note:
+                    corrected.append(note)
+                codes.append(code)
             wb.close()
             existing = [c for c in self.code_input.get("1.0", "end").splitlines() if c.strip()]
             self.code_input.delete("1.0", "end")
             self.code_input.insert("1.0", "\n".join(existing + codes))
             self._set_status(self.t["excel_loaded"].format(n=len(codes), file=Path(path).name))
+            # Warn (client decision) when codes were auto-corrected on import, so a
+            # silently-truncated EAN-13 can never turn into a wrong Code128 unnoticed.
+            if corrected:
+                shown = "\n".join(corrected[:10]) + ("\n…" if len(corrected) > 10 else "")
+                messagebox.showinfo(
+                    APP_NAME,
+                    self.t["import_corrected"].format(n=len(corrected), items=shown),
+                    parent=self,
+                )
         except Exception as e:
             messagebox.showerror(APP_NAME, f"{self.t['excel_error']}\n{e}", parent=self)
 
@@ -530,6 +586,10 @@ class App(ctk.CTk):
     def _open_output_folder(self):
         if hasattr(self, "_last_out_dir") and self._last_out_dir.exists():
             os.startfile(str(self._last_out_dir))
+        else:
+            # Folder was deleted/moved after generation — tell the user instead of
+            # silently doing nothing when they click "Open output folder".
+            messagebox.showwarning(APP_NAME, self.t["folder_missing"], parent=self)
 
     # ── Help / manual window ──────────────────────────────────────────────────
 
@@ -571,7 +631,9 @@ class App(ctk.CTk):
         win.title(self.t["settings"])
         self._center_on_parent(win, 480, 360)
         win.resizable(False, False)
-        win.grab_set()
+        # Defer grab_set: on Windows a Toplevel must be viewable first, otherwise
+        # grab_set() can raise and leave the window unusable (same guard as _open_help).
+        win.after(200, lambda: win.grab_set() if win.winfo_exists() else None)
         win.grid_columnconfigure(1, weight=1)
 
         pad = {"padx": 20, "pady": 7}

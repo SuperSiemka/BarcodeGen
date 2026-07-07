@@ -92,6 +92,12 @@ LANG = {
             "Wskazówka: plik Excel powinien zawierać kody w pierwszej kolumnie "
             "(A) pierwszego arkusza, bez nagłówka."
         ),
+        "footer_copyright": "Wszelkie prawa zastrzeżone © 2026  |  by ",
+        "folder_missing":   "Folder wyników nie istnieje (mógł zostać przeniesiony lub usunięty).",
+        "import_corrected": (
+            "Automatycznie poprawiono {n} kod(ów) z Excela "
+            "(prawdopodobnie obcięty EAN-13):\n{items}"
+        ),
     },
     "EN": {
         "settings":         "Settings",
@@ -181,6 +187,12 @@ LANG = {
         "excel_hint": (
             "Hint: the Excel file should contain codes in the first column (A) "
             "of the first sheet, with no header row."
+        ),
+        "footer_copyright": "All rights reserved © 2026  |  by ",
+        "folder_missing":   "Output folder does not exist (it may have been moved or deleted).",
+        "import_corrected": (
+            "Auto-corrected {n} code(s) from Excel "
+            "(likely a truncated EAN-13):\n{items}"
         ),
     },
 }

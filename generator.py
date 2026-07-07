@@ -16,7 +16,6 @@ Scaling strategy:
 import io
 import math
 import os
-import time
 import platform
 from pathlib import Path
 
@@ -49,7 +48,10 @@ def safe_filename(code: str) -> str:
     silently skipped for codes containing / \\ : * ? " < > |).
     """
     stem = "".join("_" if ch in _ILLEGAL_FS else ch for ch in code)
-    if stem.upper() in _WIN_RESERVED:
+    # Windows reserves a device name even when followed by an extension —
+    # "CON.x" still resolves to the CON device and cannot be written. Guard the
+    # part before the FIRST dot, not just the exact whole name.
+    if stem.split(".", 1)[0].upper() in _WIN_RESERVED:
         stem = "_" + stem
     return stem
 
@@ -64,7 +66,11 @@ def _ean13_checksum(digits: str) -> int:
 
 
 def _detect_barcode_type(code: str) -> str:
-    return "ean13" if (code.isdigit() and len(code) == 13) else "code128"
+    # Require ASCII: str.isdigit() also accepts non-ASCII digits (e.g. Arabic-Indic
+    # ٥ or the superscript ²), which would either encode DIFFERENT glyphs than typed
+    # or crash int() in the checksum. Such codes fall through to Code128, where the
+    # >126 character guard rejects them cleanly.
+    return "ean13" if (code.isascii() and code.isdigit() and len(code) == 13) else "code128"
 
 
 def _validate_ean13(code: str) -> None:
@@ -176,35 +182,15 @@ def _layout(text: str, font, tracking_px: float, gap_px: float) -> tuple[list[tu
     return positions, x
 
 
-# ── Module counting ────────────────────────────────────────────────────────────
-
-_PROBE_MW_MM = 0.5
-_PROBE_QZ_MM = 5.0
-
-
-def _count_data_modules(barcode_cls, data: str, dpi: int) -> int:
-    bc  = barcode_cls(data, writer=ImageWriter())
-    buf = io.BytesIO()
-    bc.write(buf, options={
-        "module_width":  _PROBE_MW_MM,
-        "module_height": 10,
-        "quiet_zone":    _PROBE_QZ_MM,
-        "dpi":           dpi,
-        "write_text":    False,
-        "background":    "white",
-        "foreground":    "black",
-    })
-    buf.seek(0)
-    img     = Image.open(buf)
-    qz_px   = int(_PROBE_QZ_MM * dpi / 25.4)
-    data_px = img.width - 2 * qz_px
-    mw_px   = _PROBE_MW_MM * dpi / 25.4
-    return max(1, round(data_px / mw_px))
-
-
 # ── Bar rendering ─────────────────────────────────────────────────────────────
 
 _QUIET_ZONE_MM = 6.5
+
+# Hard ceiling on the rendered pixel count. Far above any real barcode (the
+# default is ~68 kpx), it only trips on absurd parameter combinations that would
+# otherwise spend minutes rendering a multi-hundred-megapixel canvas and then
+# crash inside PIL with DecompressionBombError. Normal output is never affected.
+_MAX_RENDER_PX = 500_000_000
 
 
 def _render_bars(barcode_cls, data: str, height_mm: float,
@@ -243,6 +229,18 @@ class BarcodeGenerator:
             raise BarcodeError("Pusty kod")
         if dpi <= 0:
             raise BarcodeError(f"DPI musi być dodatnie, otrzymano: {dpi}")
+        # Reject non-finite / non-positive dimensions with a clean BarcodeError
+        # instead of a raw ValueError from python-barcode (height<0) or a silent
+        # blank, undecodable image (height=0). The GUI already clamps these via
+        # PARAM_RANGES; this hardens the public generate() API for direct callers.
+        if not (math.isfinite(height) and height > 0):
+            raise BarcodeError(f"Wysokość musi być dodatnia, otrzymano: {height}")
+        if not (math.isfinite(scale) and scale > 0):
+            raise BarcodeError(f"Skala musi być dodatnia, otrzymano: {scale}")
+        if not math.isfinite(distance):
+            raise BarcodeError(f"Nieprawidłowa szerokość modułu: {distance}")
+        if not math.isfinite(font_size):
+            raise BarcodeError(f"Nieprawidłowa wysokość tekstu: {font_size}")
 
         barcode_type = _detect_barcode_type(code)
         if barcode_type == "ean13":
@@ -279,7 +277,26 @@ class BarcodeGenerator:
         # Bar height is `height` (mm) times the overall size multiplier — kept
         # independent of module_px so width and height scale coherently.
         scaled_height = height * scale
-        bar_img       = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
+
+        # Guard against absurd parameter combinations (all individually within
+        # PARAM_RANGES) whose product would render a multi-hundred-megapixel image:
+        # minutes of CPU followed by PIL DecompressionBombError. Estimate the pixel
+        # count up front and refuse early with a readable error. The estimate is a
+        # generous upper bound (≈modules × module_px × bar-height-px), so it only
+        # rejects genuinely oversized output, never a normal barcode.
+        bar_h_px    = max(1.0, scaled_height * dpi / 25.4)
+        est_modules = max(130, 11 * len(bar_data) + 60)
+        if module_px * est_modules * bar_h_px > _MAX_RENDER_PX:
+            raise BarcodeError(
+                "Obraz zbyt duży — zmniejsz DPI, rozmiar kodu lub szerokość modułu."
+            )
+
+        try:
+            bar_img = _render_bars(cls, bar_data, scaled_height, module_mm, dpi)
+        except Image.DecompressionBombError:
+            raise BarcodeError(
+                "Obraz zbyt duży — zmniejsz DPI, rozmiar kodu lub szerokość modułu."
+            )
 
         # Crop horizontal quiet-zone whitespace, keep small side padding
         inverted = ImageChops.invert(bar_img.convert("L"))
