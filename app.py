@@ -21,7 +21,7 @@ from lang import LANG
 # ─── Constants ───────────────────────────────────────────────────────────────
 
 APP_NAME = "BarcodeGen"
-VERSION  = "1.0.0"
+VERSION  = "1.0.1"
 REG_KEY  = r"Software\BarcodeGen"
 
 DEFAULT_SETTINGS: dict = {
