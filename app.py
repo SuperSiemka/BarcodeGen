@@ -586,23 +586,46 @@ class App(ctk.CTk):
             except ValueError:
                 messagebox.showerror(APP_NAME, self.t["invalid_params"], parent=win)
 
-        ctk.CTkButton(win, text=self.t["save"], command=_save, width=120).grid(
-            row=5, column=0, columnspan=3, pady=20)
+        def _reset_defaults():
+            if not messagebox.askyesno(APP_NAME, self.t["reset_confirm"], parent=win):
+                return
+            win.destroy()
+            self.settings = dict(DEFAULT_SETTINGS)
+            save_settings(self.settings)
+            ctk.set_appearance_mode(self.settings["theme"])
+            self.lang = self.settings["language"]
+            self.t    = LANG[self.lang]
+            # Full rebuild: refreshes labels for the (possibly changed) language,
+            # the theme button icon and the size slider — codes/results survive.
+            self._rebuild_ui()
+
+        btn_row = ctk.CTkFrame(win, fg_color="transparent")
+        btn_row.grid(row=5, column=0, columnspan=3, pady=20)
+        ctk.CTkButton(btn_row, text=self.t["save"], command=_save, width=120).pack(
+            side="left", padx=(0, 10))
+        ctk.CTkButton(
+            btn_row, text=self.t["reset_defaults"], command=_reset_defaults,
+            width=150, fg_color="#555", hover_color="#444",
+        ).pack(side="left")
 
     # ── Language ──────────────────────────────────────────────────────────────
 
     def _toggle_lang(self):
-        # Preserve session state — rebuilding the UI recreates every widget,
-        # which would otherwise wipe the typed codes AND the results of the
-        # last generation (log, progress, counter) on every language switch.
-        preserved    = self.code_input.get("1.0", "end").strip()
-        log_text     = self.log_box.get("1.0", "end").rstrip("\n")
-        progress     = self.progress_bar.get()
-        folder_state = self.open_folder_btn.cget("state")
         self.lang = "EN" if self.lang == "PL" else "PL"
         self.settings["language"] = self.lang
         save_settings(self.settings)
         self.t = LANG[self.lang]
+        self._rebuild_ui()
+
+    def _rebuild_ui(self):
+        # Preserve session state — rebuilding the UI recreates every widget,
+        # which would otherwise wipe the typed codes AND the results of the
+        # last generation (log, progress, counter). Used by the language
+        # toggle and by "restore defaults".
+        preserved    = self.code_input.get("1.0", "end").strip()
+        log_text     = self.log_box.get("1.0", "end").rstrip("\n")
+        progress     = self.progress_bar.get()
+        folder_state = self.open_folder_btn.cget("state")
         for w in self.winfo_children():
             w.destroy()
         self._build_ui()
@@ -612,7 +635,8 @@ class App(ctk.CTk):
             self._log(log_text)
         self.progress_bar.set(progress)
         self.open_folder_btn.configure(state=folder_state)
-        # Counter/status re-rendered from raw numbers so they appear in the NEW language
+        # Counter/status re-rendered from raw numbers so they appear in the
+        # currently selected language
         if self._last_result is not None:
             ok, total = self._last_result
             self.count_label.configure(text=self.t["result_count"].format(ok=ok, total=total))

@@ -62,6 +62,11 @@ LANG = {
         "scale_label":      "Rozmiar kodu:",
         "scale_unit":       "×",
         "save":             "Zapisz",
+        "reset_defaults":   "Przywróć domyślne",
+        "reset_confirm": (
+            "Przywrócić wszystkie ustawienia domyślne?\n"
+            "(folder wyjściowy, wymiary, DPI, rozmiar kodu, język PL, ciemny motyw)"
+        ),
         "no_codes":         "Brak kodów do wygenerowania.",
         "too_many":         "Maksymalnie 100 kodów na raz. Wpisałeś: {n}.",
         "done":             "Zakończono generowanie.",
@@ -143,6 +148,11 @@ LANG = {
         "scale_label":      "Barcode size:",
         "scale_unit":       "×",
         "save":             "Save",
+        "reset_defaults":   "Restore defaults",
+        "reset_confirm": (
+            "Restore all default settings?\n"
+            "(output folder, dimensions, DPI, barcode size, PL language, dark theme)"
+        ),
         "no_codes":         "No codes to generate.",
         "too_many":         "Maximum 100 codes at once. You entered: {n}.",
         "done":             "Generation complete.",
