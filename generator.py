@@ -11,6 +11,7 @@ Scaling strategy:
 """
 
 import io
+import math
 import os
 import time
 import platform
@@ -216,7 +217,8 @@ class BarcodeGenerator:
         code:      str,
         out_dir:   Path,
         height:    float = 9.0,
-        distance:  float = 0.15,
+        distance:  float = 0.33,   # keep in sync with app.DEFAULT_SETTINGS —
+                                   # 0.15 was the legacy dead value (see load_settings migration)
         font_size: float = 1.3,
         dpi:       int   = 300,
         scale:     float = 1.0,
@@ -252,8 +254,11 @@ class BarcodeGenerator:
         module_px     = max(2, round(req_module_mm * dpi / 25.4))
         module_mm     = module_px * 25.4 / dpi
         if module_mm < 0.2:                                  # scanner/library minimum
-            module_mm  = 0.2
-            module_px  = max(2, round(module_mm * dpi / 25.4))
+            # Round UP to a whole pixel that still satisfies the 0.2 mm floor —
+            # rendering a fractional-px module (e.g. 0.2 mm = 2.36 px @300 DPI)
+            # would break the integer-px invariant and produce uneven bar widths.
+            module_px = max(2, math.ceil(0.2 * dpi / 25.4))
+            module_mm = module_px * 25.4 / dpi
 
         # ── 2. Render bar image (no text) ────────────────────────────────
         # Bar height is `height` (mm) times the overall size multiplier — kept

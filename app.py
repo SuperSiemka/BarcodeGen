@@ -103,6 +103,9 @@ class App(ctk.CTk):
         self.lang      = self.settings["language"]
         self.t         = LANG[self.lang]
         self.generator = BarcodeGenerator()
+        self._last_result = None   # (ok, total) of the last batch — kept as raw
+                                   # numbers so the counter can be re-rendered in
+                                   # the new language after a UI rebuild
 
         ctk.set_appearance_mode(self.settings.get("theme", "dark"))
         ctk.set_default_color_theme("blue")
@@ -383,6 +386,7 @@ class App(ctk.CTk):
         self._set_status("")
         self.count_label.configure(text="")
         self.open_folder_btn.configure(state="disabled")
+        self._last_result = None
 
     def _on_generate(self):
         raw   = self.code_input.get("1.0", "end").strip()
@@ -465,6 +469,7 @@ class App(ctk.CTk):
 
     def _on_generation_done(self, total: int, errors: list, out_dir: Path):
         ok = total - len(errors)
+        self._last_result = (ok, total)
         self.generate_btn.configure(state="normal")
         self.open_folder_btn.configure(state="normal")
         self.count_label.configure(text=self.t["result_count"].format(ok=ok, total=total))
@@ -576,9 +581,13 @@ class App(ctk.CTk):
     # ── Language ──────────────────────────────────────────────────────────────
 
     def _toggle_lang(self):
-        # Preserve the codes the user already typed — rebuilding the UI recreates
-        # the textbox, which would otherwise wipe them on every language switch.
-        preserved = self.code_input.get("1.0", "end").strip()
+        # Preserve session state — rebuilding the UI recreates every widget,
+        # which would otherwise wipe the typed codes AND the results of the
+        # last generation (log, progress, counter) on every language switch.
+        preserved    = self.code_input.get("1.0", "end").strip()
+        log_text     = self.log_box.get("1.0", "end").rstrip("\n")
+        progress     = self.progress_bar.get()
+        folder_state = self.open_folder_btn.cget("state")
         self.lang = "EN" if self.lang == "PL" else "PL"
         self.settings["language"] = self.lang
         save_settings(self.settings)
@@ -588,6 +597,15 @@ class App(ctk.CTk):
         self._build_ui()
         if preserved:
             self.code_input.insert("1.0", preserved)
+        if log_text:
+            self._log(log_text)
+        self.progress_bar.set(progress)
+        self.open_folder_btn.configure(state=folder_state)
+        # Counter/status re-rendered from raw numbers so they appear in the NEW language
+        if self._last_result is not None:
+            ok, total = self._last_result
+            self.count_label.configure(text=self.t["result_count"].format(ok=ok, total=total))
+            self._set_status(self.t["done"])
 
     def _other_lang(self) -> str:
         return "EN" if self.lang == "PL" else "PL"
